@@ -158,6 +158,14 @@ export async function persistCliAssistantTranscript(params: {
     cacheWrite?: number;
     total?: number;
   };
+  /** Cumulative usage for the whole run, when the backend reports one apart from its last call. */
+  runUsage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
   stopReason: StopReason;
   yielded?: true;
 }): Promise<{
@@ -225,11 +233,14 @@ export async function persistCliAssistantTranscript(params: {
           },
           content: [{ type: "text", text: params.text }],
           stopReason: params.stopReason,
+          // Billed counters are the run's cumulative usage when the backend
+          // reported one. totalTokens stays the last call's, because readers
+          // treat it as a context snapshot.
           usage: buildUsageWithNoCost({
-            input: params.usage?.input,
-            output: params.usage?.output,
-            cacheRead: params.usage?.cacheRead,
-            cacheWrite: params.usage?.cacheWrite,
+            input: (params.runUsage ?? params.usage)?.input,
+            output: (params.runUsage ?? params.usage)?.output,
+            cacheRead: (params.runUsage ?? params.usage)?.cacheRead,
+            cacheWrite: (params.runUsage ?? params.usage)?.cacheWrite,
             totalTokens: params.usage?.total,
           }),
         }),

@@ -585,7 +585,9 @@ export function buildCliRunResult(params: {
         provider: runParams.modelProvider ?? runParams.provider,
         model: context.modelId,
         ...preparedContextAgentMeta,
-        usage: output.usage,
+        // A CLI backend's terminal record is cumulative for the run; the last
+        // streamed record stays on lastCallUsage, which sizes the context window.
+        usage: output.diagnosticUsage ?? output.usage,
         ...(output.usage ? { lastCallUsage: output.usage } : {}),
         ...(output.diagnosticUsage ? { diagnosticUsage: output.diagnosticUsage } : {}),
         ...(persistedCliSessionId
