@@ -24,7 +24,7 @@ import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.js";
 import { projectAgentHarnessTranscriptMessageForDisplay } from "../harness/transcript-visibility.js";
 import { buildUsageWithNoCost } from "../stream-message-shared.js";
-import type { ContextUsage } from "../usage.js";
+import { deriveCliContextUsage, type ContextUsage } from "../usage.js";
 
 type TranscriptUsage = {
   input?: number;
@@ -103,18 +103,7 @@ function resolveCliTranscriptUsage(usage: TranscriptUsage | undefined): Transcri
   if (usage.contextUsage) {
     return usage;
   }
-  const promptTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
-  return {
-    ...usage,
-    contextUsage:
-      promptTokens > 0
-        ? {
-            state: "available",
-            promptTokens,
-            totalTokens: promptTokens + (usage.output ?? 0),
-          }
-        : { state: "unavailable" },
-  };
+  return { ...usage, contextUsage: deriveCliContextUsage(usage) };
 }
 function resolveTranscriptUsage(usage: PersistTextTurnTranscriptParams["assistant"]["usage"]) {
   if (!usage) {

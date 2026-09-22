@@ -9,6 +9,24 @@ import type { Usage } from "../llm/types.js";
 
 export type ContextUsage = NonNullable<Usage["contextUsage"]>;
 
+/**
+ * Context snapshot of a CLI backend's last model call. A CLI transcript row
+ * bills the whole run, so its context must travel separately: prompt tokens
+ * are the call's uncached input plus its cache reads and writes.
+ */
+export function deriveCliContextUsage(lastCall: {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}): ContextUsage {
+  const promptTokens =
+    (lastCall.input ?? 0) + (lastCall.cacheRead ?? 0) + (lastCall.cacheWrite ?? 0);
+  return promptTokens > 0
+    ? { state: "available", promptTokens, totalTokens: promptTokens + (lastCall.output ?? 0) }
+    : { state: "unavailable" };
+}
+
 export const USAGE_COST_COMPONENTS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 
 type PromptTokenDetails = {

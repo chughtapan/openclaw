@@ -44,6 +44,7 @@ import type { AgentMessage } from "../runtime/index.js";
 import { withSessionManagerWrite } from "../sessions/session-manager-write-admission.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { buildAssistantMessage, buildUsageWithNoCost } from "../stream-message-shared.js";
+import { deriveCliContextUsage } from "../usage.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./types.js";
 
 const log = createSubsystemLogger("agents/cli-runner");
@@ -54,6 +55,35 @@ export function buildCliHookUserMessage(prompt: string): unknown {
     content: prompt,
     timestamp: Date.now(),
   };
+}
+
+type CliTranscriptUsageCounts = {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  total?: number;
+};
+
+/**
+ * Billing counters and their total come from one scope: the run's cumulative
+ * usage when the backend reports one, else the last call. The last call's
+ * context travels in `contextUsage`, never in `totalTokens`, so billing
+ * readers and context readers each see a self-consistent value.
+ */
+function buildCliTranscriptUsage(
+  lastCall: CliTranscriptUsageCounts | undefined,
+  run: CliTranscriptUsageCounts | undefined,
+) {
+  const billed = run ?? lastCall;
+  const usage = buildUsageWithNoCost({
+    input: billed?.input,
+    output: billed?.output,
+    cacheRead: billed?.cacheRead,
+    cacheWrite: billed?.cacheWrite,
+    totalTokens: billed?.total,
+  });
+  return lastCall ? { ...usage, contextUsage: deriveCliContextUsage(lastCall) } : usage;
 }
 
 /** Interrupted turns persist as aborted so replayed history never treats partial text as complete. */
@@ -233,16 +263,7 @@ export async function persistCliAssistantTranscript(params: {
           },
           content: [{ type: "text", text: params.text }],
           stopReason: params.stopReason,
-          // Billed counters are the run's cumulative usage when the backend
-          // reported one. totalTokens stays the last call's, because readers
-          // treat it as a context snapshot.
-          usage: buildUsageWithNoCost({
-            input: (params.runUsage ?? params.usage)?.input,
-            output: (params.runUsage ?? params.usage)?.output,
-            cacheRead: (params.runUsage ?? params.usage)?.cacheRead,
-            cacheWrite: (params.runUsage ?? params.usage)?.cacheWrite,
-            totalTokens: params.usage?.total,
-          }),
+          usage: buildCliTranscriptUsage(params.usage, params.runUsage),
         }),
         // A paused turn owns visible progress, not a final answer. Keep the
         // existing keyed-segment contract without hiding narration or media.

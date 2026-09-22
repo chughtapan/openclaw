@@ -4,6 +4,8 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
 import { sanitizeChatHistoryMessages } from "../../gateway/chat-display-projection.sanitize.js";
+import { aggregateSessionTranscriptUsage } from "../../gateway/session-transcript-derived-readers.js";
+import { computeUsageTokenTotals } from "../../infra/session-cost-usage-pricing.js";
 import type { AssistantMessage } from "../../llm/types.js";
 import { upsertSessionEntry } from "../../plugin-sdk/session-store-runtime.js";
 import {
@@ -18,6 +20,7 @@ import {
 } from "../../sessions/transcript-events.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { isIntermediateAssistantTranscriptMessage } from "../embedded-agent-runner/message-visibility.js";
+import { normalizeUsage } from "../usage.js";
 import { persistCliAssistantTranscript } from "./cli-run-transcript.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -170,3 +173,93 @@ it.each([
     }
   },
 );
+
+const LAST_CALL = { input: 11, output: 7, total: 18 };
+const RUN = { input: 21, output: 9, total: 30 };
+
+type CliUsageCounts = { input?: number; output?: number; total?: number };
+
+/**
+ * Persists one CLI assistant row through the real SQLite transcript and returns
+ * the stored assistant messages.
+ * @param usage The backend's last model call.
+ * @param runUsage The backend's cumulative run usage, when it reports one.
+ */
+async function persistCliUsageRow(
+  usage: CliUsageCounts | undefined,
+  runUsage: CliUsageCounts | undefined,
+): Promise<AssistantMessage[]> {
+  const root = tempDirs.make("openclaw-cli-usage-transcript-");
+  const target = {
+    agentId: "main",
+    sessionId: "cli-usage-session",
+    sessionKey: "agent:main:cli-usage",
+    storePath: path.join(root, "agents", "main", "agent", "openclaw-agent.sqlite"),
+  };
+  await upsertSessionEntry({
+    ...target,
+    entry: { sessionId: target.sessionId, updatedAt: Date.now() },
+  });
+  await persistCliAssistantTranscript({
+    runParams: {
+      ...target,
+      sessionFile: `sqlite://agents/main/${target.sessionId}`,
+      workspaceDir: root,
+      prompt: "read three files",
+      provider: "claude-cli",
+      runId: "cli-usage-run",
+      timeoutMs: 1_000,
+      persistAssistantTranscript: true,
+    },
+    text: "done",
+    modelId: "claude-sonnet-4-6",
+    stopReason: "stop",
+    ...(usage ? { usage } : {}),
+    ...(runUsage ? { runUsage } : {}),
+  });
+  return (await loadTranscriptEvents(target)).flatMap((event) =>
+    typeof event === "object" && event !== null && "message" in event
+      ? [event.message as AssistantMessage]
+      : [],
+  );
+}
+
+it("bills a CLI run's cumulative usage with a total in the same scope", async () => {
+  const [message] = await persistCliUsageRow(LAST_CALL, RUN);
+
+  expect(message?.usage).toMatchObject({ input: 21, output: 9, totalTokens: 30 });
+});
+
+it("keeps a CLI run's last model call as the transcript context snapshot", async () => {
+  const [message] = await persistCliUsageRow(LAST_CALL, RUN);
+
+  expect(message?.usage.contextUsage).toEqual({
+    state: "available",
+    promptTokens: 11,
+    totalTokens: 18,
+  });
+});
+
+it("totals a CLI run's counters when the backend omits the run total", async () => {
+  const [message] = await persistCliUsageRow(LAST_CALL, { input: 21, output: 9 });
+
+  expect(message?.usage.totalTokens).toBe(30);
+});
+
+it("bills the last call when a CLI backend reports no run usage", async () => {
+  const [message] = await persistCliUsageRow(LAST_CALL, undefined);
+
+  expect(message?.usage).toMatchObject({ input: 11, output: 7, totalTokens: 18 });
+});
+
+it("reports a persisted CLI run's cumulative total to usage billing", async () => {
+  const [message] = await persistCliUsageRow(LAST_CALL, RUN);
+
+  expect(computeUsageTokenTotals(normalizeUsage(message?.usage) ?? {}).totalTokens).toBe(30);
+});
+
+it("reports a persisted CLI run's last call to the session context reader", async () => {
+  const messages = await persistCliUsageRow(LAST_CALL, RUN);
+
+  expect(aggregateSessionTranscriptUsage(messages)?.totalTokens).toBe(11);
+});

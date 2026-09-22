@@ -173,6 +173,11 @@ can overstate the live context window. Context displays and diagnostics use
 the latest prompt snapshot (`promptTokens`, or the last model call when no
 prompt snapshot is available) for `context.used`.
 
+A CLI backend that reports a cumulative terminal result (Claude Code) records
+that result as the turn's usage, so a turn with tool calls counts every model
+call. The same transcript entry carries the last model call as its context
+snapshot.
+
 Native Codex turn usage sums the reported counts from each unique completed
 model response, including responses before a retry or cancellation. Missing
 response counts stay unknown; they do not erase already observed usage. A
