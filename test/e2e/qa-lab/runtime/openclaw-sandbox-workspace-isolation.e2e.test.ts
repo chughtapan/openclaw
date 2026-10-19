@@ -3,9 +3,15 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../../../src/config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../../../src/config/types.openclaw.js";
 import { captureEnv, setTestEnvValue } from "../../../../src/test-utils/env.js";
+
+afterEach(clearRuntimeConfigSnapshot);
 
 type WorkspaceAccess = "none" | "ro" | "rw";
 type SandboxContext = NonNullable<
@@ -65,7 +71,7 @@ test("Docker enforces none, read-only, and read-write workspace isolation", asyn
   const stateDir = path.join(root, "state");
   const workspaceRoot = path.join(root, "sandboxes");
   const unrelatedSentinel = path.join(root, "host-only-sentinel.txt");
-  const image = process.env.OPENCLAW_SANDBOX_TEST_IMAGE ?? "openclaw-sandbox:bookworm-slim";
+  const image = process.env.OPENCLAW_SANDBOX_TEST_IMAGE ?? "openclaw-sandbox:trixie-slim";
   const prefix = `oc-qa-${process.pid}-`;
   const env = captureEnv(["OPENCLAW_STATE_DIR"]);
   const runtimes: string[] = [];
@@ -93,10 +99,12 @@ test("Docker enforces none, read-only, and read-write workspace isolation", asyn
       }
       await fs.writeFile(hostSentinel, `original-${access}`);
 
+      const config = createConfig({ access, image, prefix, workspaceRoot });
+      setRuntimeConfigSnapshot(config);
       let sandbox: SandboxContext | null = null;
       try {
         sandbox = await resolveSandboxContext({
-          config: createConfig({ access, image, prefix, workspaceRoot }),
+          config,
           agentId: `workspace-${access}`,
           sessionKey: `agent:workspace-${access}:qa-${randomUUID()}`,
           workspaceDir: hostWorkspace,
@@ -165,7 +173,7 @@ test("Docker confines subagent attachments to the authorized session", async () 
   const stateDir = path.join(root, "state");
   const workspaceDir = path.join(root, "workspace");
   const workspaceRoot = path.join(root, "sandboxes");
-  const image = process.env.OPENCLAW_SANDBOX_TEST_IMAGE ?? "openclaw-sandbox:bookworm-slim";
+  const image = process.env.OPENCLAW_SANDBOX_TEST_IMAGE ?? "openclaw-sandbox:trixie-slim";
   const prefix = `oc-attachment-qa-${process.pid}-`;
   const attachedSessionKey = `agent:main:subagent:attached-${randomUUID()}`;
   const siblingSessionKey = `agent:main:subagent:sibling-${randomUUID()}`;
@@ -184,6 +192,7 @@ test("Docker confines subagent attachments to the authorized session", async () 
   });
   config.agents!.defaults!.sandbox!.scope = "agent";
   config.tools = { sessions_spawn: { attachments: { enabled: true } } };
+  setRuntimeConfigSnapshot(config);
 
   try {
     const [

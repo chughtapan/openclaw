@@ -1,7 +1,5 @@
 /** Native subagent registration and paused-run adoption precede Gateway acceptance. */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { readAcpSessionMetaForEntries } from "../../acp/runtime/session-meta-readonly.js";
-import { resolveSessionStorePathForAcp } from "../../acp/runtime/session-meta-store.js";
 import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import {
   readFollowupRequest,
@@ -12,13 +10,22 @@ import type {
   FollowupCompletionOwner,
   FollowupSuccessor,
 } from "../../agents/subagents/completion/session-followup-completion.types.js";
+import { resolveSubagentChildAuthority } from "../../agents/subagents/registry/subagent-child-owner-match.js";
 import { getLatestLiveSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry-read.js";
 import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isAcpSessionKey } from "../../routing/session-key.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
+import {
+  getRpcSourceForGateway,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  isRpcSourceRegistered,
+  type RpcSourceAdapter,
+  type RpcSourceIdentity,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
 import { registerPluginSubagentRunFromGateway } from "../server-methods/agent-subagent-registration.js";
@@ -31,9 +38,8 @@ export async function prepareGatewaySubagentRun(params: {
   cfg: OpenClawConfig;
   client: AgentTurnPrincipal | null;
   resolvedSessionKey?: string;
-  activeSessionAgentId?: string;
+  activeSessionAgentId: string;
   inputProvenance?: InputProvenance;
-  sessionEntry?: SessionEntry;
   request: Pick<AgentRunRequest, "message">;
   isOneShotModelRun: boolean;
   runId: string;
@@ -145,33 +151,22 @@ export async function prepareGatewaySubagentRun(params: {
     internalOwner !== "native_subagent" &&
     !isAcpSessionKey(sessionKey),
   );
-  if (!reactivateSubagent || !sessionKey) {
-    return { pluginSubagent, reactivateSubagent: false };
-  }
-  const entry = params.assertResumeAdmissionCurrent() ?? params.sessionEntry;
-  const agentId =
-    params.activeSessionAgentId ??
-    resolveSessionStorePathForAcp({ cfg: params.cfg, sessionKey }).agentId;
-  const [acpMeta] = await readAcpSessionMetaForEntries({
-    cfg: params.cfg,
-    entries: [{ agentId, sessionKey, entry }],
-  });
-  params.assertResumeAdmissionCurrent();
-  return { pluginSubagent, reactivateSubagent: acpMeta == null };
+  return { pluginSubagent, reactivateSubagent };
 }
 
 /** Rejection may settle only the exact physical execution already adopted by this admission. */
 export async function settleUnstartedGatewayFollowup(params: {
   completion: FollowupCompletionOwner | undefined;
   runId: string;
-  admittedRunEntry: ChatAbortControllerEntry | undefined;
+  admittedRunEntry: RpcSourceRef | undefined;
   admittedRunIdentity:
-    | Pick<
-        ChatAbortControllerEntry,
-        "controller" | "operationalRunInstance" | "lifecycleGeneration" | "sessionKey"
-      >
+    | (Pick<RpcSourceAdapter, "operationalRunInstance"> &
+        Pick<RpcSourceIdentity, "sessionKey"> & {
+          controller: Pick<AbortController, "signal" | "abort">;
+          lifecycleGeneration?: string;
+        })
     | undefined;
-  context: Pick<AgentTurnContext, "chatAbortControllers" | "logGateway">;
+  context: Pick<AgentTurnContext, "logGateway" | "resolveGatewayContext">;
   isIncognito?: boolean;
   outcome: AgentRunTerminalOutcome;
 }): Promise<void> {
@@ -184,20 +179,27 @@ export async function settleUnstartedGatewayFollowup(params: {
       params.runId,
       { ...params.outcome, endedAt: params.outcome.endedAt ?? Date.now() },
       () => {
-        const current = params.context.chatAbortControllers.get(params.runId);
+        const current =
+          params.admittedRunEntry && isRpcSourceRegistered(params.admittedRunEntry)
+            ? params.admittedRunEntry
+            : getRpcSourceForGateway(
+                params.runId,
+                params.context.resolveGatewayContext,
+                params.admittedRunEntry?.input.target,
+              );
         const admitted = params.admittedRunIdentity;
         const ownsRegistration =
           current === params.admittedRunEntry &&
           admitted &&
-          current?.controller === admitted.controller &&
-          current.operationalRunInstance === admitted.operationalRunInstance &&
-          current.lifecycleGeneration === admitted.lifecycleGeneration &&
-          current.sessionKey === admitted.sessionKey;
+          current?.input.abortSignal === admitted.controller.signal &&
+          current.adapter.operationalRunInstance === admitted.operationalRunInstance &&
+          getRpcSourceLifecycleGeneration(current) === admitted.lifecycleGeneration &&
+          getRpcSourceIdentity(current).sessionKey === admitted.sessionKey;
         if (
           current &&
           !ownsRegistration &&
           (current === params.admittedRunEntry ||
-            current.sessionKey === completion.request.targetSessionKey)
+            getRpcSourceIdentity(current).sessionKey === completion.request.targetSessionKey)
         ) {
           throw new Error("Follow-up admission was replaced before cleanup.");
         }
@@ -223,13 +225,18 @@ export function resolveRegisteredSubagentTimeoutSeconds(params: {
   const registeredRun = params.sessionKey
     ? getLatestLiveSubagentRunByChildSessionKey(params.sessionKey, undefined, params.agentId)
     : undefined;
-  const registeredSession = registeredRun?.childSessionIdentity;
+  const authority = registeredRun
+    ? resolveSubagentChildAuthority(registeredRun, params.admittedSessionEntry)
+    : undefined;
   // Admission may adopt a replacement; retained rows must match its final identity.
   const inherits =
     registeredRun &&
-    !registeredRun.execution.suppressSessionEffects &&
-    registeredSession?.sessionId === params.admittedSessionId &&
-    registeredSession.sessionId === params.admittedSessionEntry?.sessionId &&
-    registeredSession.lifecycleRevision === params.admittedSessionEntry.lifecycleRevision;
+    (!registeredRun.execution.suppressSessionEffects ||
+      authority?.status === "legacy-unverified") &&
+    params.admittedSessionEntry?.sessionId === params.admittedSessionId &&
+    registeredRun.childSessionIdentity?.sessionId === params.admittedSessionId &&
+    registeredRun.childSessionIdentity?.lifecycleRevision ===
+      params.admittedSessionEntry?.lifecycleRevision &&
+    authority?.status !== "mismatch";
   return inherits ? (registeredRun.runTimeoutSeconds ?? 0) : undefined;
 }

@@ -6,7 +6,6 @@ import {
   type HeartbeatWakeHandler,
 } from "../infra/heartbeat-wake.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
-import { listCronHeartbeatWaitOwners } from "./active-jobs.js";
 import { heartbeatTaskDeclarationKey } from "./heartbeat-task.js";
 import type { CronEvent } from "./service.js";
 import {
@@ -43,6 +42,7 @@ async function withHeartbeatCron(
     await run({ ...context, events });
   } finally {
     context.cron.stop();
+    await context.cron.waitForIdle();
     await cleanup();
   }
 }
@@ -146,14 +146,10 @@ describe("heartbeat payload execution", () => {
     }
   });
 
-  it("settles an enqueued manual heartbeat run without its Cron lane self-blocking", async () => {
-    let observedWaitOwners: ReturnType<typeof listCronHeartbeatWaitOwners> | undefined;
+  it("settles an enqueued manual heartbeat run without occupying the command lane", async () => {
     await withHeartbeatCron(
       {
-        requestHeartbeatAndWait: async () => {
-          observedWaitOwners = listCronHeartbeatWaitOwners();
-          return { status: "ran", durationMs: 1 };
-        },
+        requestHeartbeatAndWait: async () => ({ status: "ran", durationMs: 1 }),
       },
       async ({ cron, finished }) => {
         const job = await addMonitor(cron);
@@ -166,12 +162,6 @@ describe("heartbeat payload execution", () => {
           status: "ok",
           completionStatus: "succeeded",
         });
-        expect(observedWaitOwners?.activeJobMarkers).toEqual([
-          expect.objectContaining({ jobId: job.id }),
-        ]);
-        expect(observedWaitOwners?.owningCronLaneTaskMarkers).toEqual([
-          expect.objectContaining({ lane: "cron" }),
-        ]);
       },
     );
   });

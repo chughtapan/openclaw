@@ -4,14 +4,15 @@ import { afterEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
 import { createQueueTestRun } from "../../../auto-reply/reply/queue.test-helpers.js";
 import { createTestReplyOperation } from "../../../auto-reply/reply/reply-run-registry.test-helpers.js";
-import { testing } from "../../../auto-reply/reply/reply-run-registry.test-support.js";
 import { prepareReplyToolAuthority } from "../../../auto-reply/reply/reply-tool-authority.js";
+import { captureRuntimeConfigAsyncReader } from "../../../config/config.js";
 import {
   loadSessionEntryReadOnly,
   updateSessionEntry,
   upsertSessionEntryCore,
 } from "../../../config/sessions/session-accessor.js";
 import * as sessionReads from "../../../config/sessions/session-entry-read-runtime.js";
+import { testing } from "../../../sessions/session-controller.test-support.js";
 import { sessionChanges } from "../../../sessions/session-row-changes.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../../state/openclaw-agent-db-lifecycle.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
@@ -26,7 +27,7 @@ import {
 import { createNativeSessionBindingAuthority } from "./binding-authority.js";
 
 afterEach(() => {
-  testing.resetReplyRunRegistry();
+  testing.resetSessionControllerForTest();
   vi.restoreAllMocks();
 });
 
@@ -42,6 +43,7 @@ it.each([
   "legacy-allowed",
 ] as const)("keeps fresh tool policy and native lineage at final admission: %s", async (change) => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    await captureRuntimeConfigAsyncReader()();
     const nativeKey = "agent:main:native-lineage";
     const policyKey = "agent:policy:steering-policy";
     await upsertSessionEntryCore(
@@ -246,6 +248,7 @@ it.each([
 
 it("pins the native lineage database before tool preparation yields", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    await captureRuntimeConfigAsyncReader()();
     const sessionKey = "agent:main:lineage-source";
     await upsertSessionEntryCore(
       { agentId: "main", sessionKey },

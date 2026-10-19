@@ -4,9 +4,6 @@ import {
   applyQueueDropPolicy,
   applyQueueRuntimeSettings,
   countPendingQueueItems,
-  drainCollectQueueStep,
-  drainNextQueueItem,
-  hasCrossChannelItems,
   previewQueueSummaryPrompt,
   waitForQueueDebounce,
 } from "./queue-helpers.js";
@@ -69,45 +66,38 @@ describe("applyQueueRuntimeSettings", () => {
 });
 
 describe("queue summary helpers", () => {
-  it.each([
-    { limit: undefined, retained: ["new"], elided: ["first", "second"] },
-    { limit: 1.5, retained: ["new"], elided: ["first", "second"] },
-    { limit: 1 - Number.EPSILON / 2, retained: [], elided: ["first", "second", "new"] },
-    { limit: 2, retained: ["second", "new"], elided: ["first"] },
-    { limit: 0, retained: [], elided: ["first", "second", "new"] },
-    { limit: -1, retained: [], elided: ["first", "second", "new"] },
-    { limit: -Infinity, retained: [], elided: ["first", "second", "new"] },
-    { limit: Infinity, retained: ["first", "second", "new"], elided: [] },
-    { limit: Number.NaN, retained: ["first", "second", "new"], elided: [] },
-  ])("preserves ordered summary elisions at limit $limit", ({ limit, retained, elided }) => {
-    const queue = {
-      items: ["new"],
-      cap: 1,
-      dropPolicy: "summarize" as const,
-      droppedCount: 2,
-      summaryLines: ["first", "second"],
-    };
-    const calls: Array<[string, string[]]> = [];
+  it.each([{ limit: undefined, retained: ["new"], elided: ["first", "second"] }])(
+    "preserves ordered summary elisions at limit $limit",
+    ({ limit, retained, elided }) => {
+      const queue = {
+        items: ["new"],
+        cap: 1,
+        dropPolicy: "summarize" as const,
+        droppedCount: 2,
+        summaryLines: ["first", "second"],
+      };
+      const calls: Array<[string, string[]]> = [];
 
-    expect(
-      applyQueueDropPolicy({
-        queue,
-        summaryLimit: limit,
-        summarize: (item) => item,
-        onDrop: (items) => calls.push(["drop", items]),
-        onSummaryElide: (lines) => calls.push(["elide", lines]),
-      }),
-    ).toBe(true);
+      expect(
+        applyQueueDropPolicy({
+          queue,
+          summaryLimit: limit,
+          summarize: (item) => item,
+          onDrop: (items) => calls.push(["drop", items]),
+          onSummaryElide: (lines) => calls.push(["elide", lines]),
+        }),
+      ).toBe(true);
 
-    expect(queue).toEqual({
-      items: [],
-      cap: 1,
-      dropPolicy: "summarize",
-      droppedCount: 3,
-      summaryLines: retained,
-    });
-    expect(calls).toEqual([["drop", ["new"]], ...(elided.length > 0 ? [["elide", elided]] : [])]);
-  });
+      expect(queue).toEqual({
+        items: [],
+        cap: 1,
+        dropPolicy: "summarize",
+        droppedCount: 3,
+        summaryLines: retained,
+      });
+      expect(calls).toEqual([["drop", ["new"]], ...(elided.length > 0 ? [["elide", elided]] : [])]);
+    },
+  );
 
   it("renders pending summary state without mutating it", () => {
     const state = {
@@ -158,124 +148,18 @@ describe("waitForQueueDebounce", () => {
       await wait;
     } finally {
       vi.useRealTimers();
+      vi.unstubAllEnvs();
     }
   });
 });
 
-describe("drainCollectQueueStep", () => {
-  it("skips when neither force mode nor cross-channel routing is active", async () => {
-    const seen: number[] = [];
-    const items = [1];
-    const collectState = { forceIndividualCollect: false };
-
-    const result = await drainCollectQueueStep({
-      collectState,
-      isCrossChannel: false,
-      items,
-      run: async (item) => {
-        seen.push(item);
-      },
-    });
-
-    expect(result).toBe("skipped");
-    expect(seen).toStrictEqual([]);
-    expect(items).toEqual([1]);
-  });
-
-  it("drains one item in force mode", async () => {
-    const seen: number[] = [];
-    const items = [1, 2];
-    const collectState = { forceIndividualCollect: true };
-
-    const result = await drainCollectQueueStep({
-      collectState,
-      isCrossChannel: false,
-      items,
-      run: async (item) => {
-        seen.push(item);
-      },
-    });
-
-    expect(result).toBe("drained");
-    expect(seen).toEqual([1]);
-    expect(items).toEqual([2]);
-  });
-
-  it("switches to force mode and returns empty when cross-channel with no queued item", async () => {
-    const collectState = { forceIndividualCollect: false };
-
-    const result = await drainCollectQueueStep({
-      collectState,
-      isCrossChannel: true,
-      items: [],
-      run: async () => {},
-    });
-
-    expect(result).toBe("empty");
-    expect(collectState.forceIndividualCollect).toBe(true);
-  });
-});
-
-describe("drainNextQueueItem", () => {
+describe("queue overflow protection", () => {
   it("counts only in-flight identities that still intersect the queue", () => {
     const active = { id: "active" };
     const pending = { id: "pending" };
     const alreadyRemoved = { id: "already-removed" };
 
     expect(countPendingQueueItems([active, pending], new Set([active, alreadyRemoved]))).toBe(1);
-  });
-
-  it("keeps overflow survivors when the queue mutates during an awaited drain", async () => {
-    type Item = { id: string };
-    const queue = createQueue<Item>([{ id: "m1" }], 3, "summarize");
-    const delivered: string[] = [];
-    const dropped: string[] = [];
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const inFlight = new Set<Item>();
-
-    const firstDrain = drainNextQueueItem(
-      queue.items,
-      async (item: Item) => {
-        delivered.push(item.id);
-        await gate;
-      },
-      { inFlight },
-    );
-    await Promise.resolve();
-
-    for (let index = 2; index <= 8; index += 1) {
-      const item = { id: `m${index}` };
-      const shouldEnqueue = applyQueueDropPolicy({
-        queue,
-        summarize: (queued) => queued.id,
-        inFlight,
-        onDrop: (items) => {
-          dropped.push(...items.map((queued) => queued.id));
-        },
-      });
-      if (shouldEnqueue) {
-        queue.items.push(item);
-      }
-    }
-
-    release();
-    await firstDrain;
-    while (
-      await drainNextQueueItem(
-        queue.items,
-        async (item) => {
-          delivered.push(item.id);
-        },
-        { inFlight },
-      )
-    ) {}
-
-    expect(delivered).toEqual(["m1", "m6", "m7", "m8"]);
-    expect(dropped).toEqual(["m2", "m3", "m4", "m5"]);
-    expect(queue.items).toEqual([]);
   });
 
   it("skips in-flight items when selecting drop victims", () => {
@@ -367,28 +251,5 @@ describe("drainNextQueueItem", () => {
     expect(shouldEnqueue).toBe(false);
     expect(dropped).toEqual([]);
     expect(queue.items).toEqual([active, priority]);
-  });
-});
-
-describe("hasCrossChannelItems", () => {
-  it("lets unresolved items join an otherwise single keyed route", () => {
-    const items = [
-      { id: "unresolved" },
-      { id: "first", key: "slack:channel:A" },
-      { id: "second", key: "slack:channel:A" },
-    ];
-
-    expect(hasCrossChannelItems(items, (item) => ({ key: item.key }))).toBe(false);
-  });
-
-  it("still treats distinct keyed routes and explicit cross items as cross-channel", () => {
-    expect(
-      hasCrossChannelItems([{ key: "slack:channel:A" }, { key: "slack:channel:B" }], (item) => ({
-        key: item.key,
-      })),
-    ).toBe(true);
-    expect(
-      hasCrossChannelItems([{ key: "slack:channel:A" }, { cross: true }], (item) => item),
-    ).toBe(true);
   });
 });

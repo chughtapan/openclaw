@@ -28,6 +28,7 @@ import {
 import { resolveBoundDeliveryDestination } from "./bound-delivery-router.js";
 import {
   bindCurrentConversationRecordAsync,
+  bindGenericCurrentConversation,
   listCurrentConversationBindingRecordsBySessionsAsync,
   removeCurrentConversationBindingsAsync,
   inspectCurrentConversationBindingRecordAsync,
@@ -43,6 +44,7 @@ import { conversationBindingOperations } from "./current-conversation-bindings.w
 import { expectedCurrentSessionBinding } from "./session-binding-native-selection.js";
 import {
   getSessionBindingService,
+  prepareSessionBindingInspections,
   listSessionBindingsBySessionsAsync,
   registerSessionBindingAdapter,
   unregisterSessionBindingAdapter,
@@ -327,6 +329,78 @@ it("reuses resolved bindings until sync or worker writes publish new facts", asy
     run.mockClear();
     expect(await resolveCurrentConversationBindingRecordAsync(original.conversation)).toBeNull();
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+it("keeps a prepared selection current after a completed no-op worker resolve", async () => {
+  await withOpenClawTestState({ label: "binding-prepared-noop-resolve" }, async () => {
+    openOpenClawStateDatabase();
+    const conversation = {
+      channel: INTERNAL_MESSAGE_CHANNEL,
+      accountId: "default",
+      conversationId: "missing-prepared",
+    };
+    const prepared = await prepareSessionBindingInspections([conversation]);
+    const changes: string[] = [];
+    const unsubscribe = currentConversationBindingPublication.subscribeFacts((change) => {
+      changes.push(
+        "receipt" in change
+          ? "receipt"
+          : change.kind === "settled"
+            ? (change.outcome ?? "unknown")
+            : change.kind,
+      );
+    });
+    try {
+      expect(prepared.inspect()).toMatchObject([{ status: "available", binding: null }]);
+      expect(await resolveCurrentConversationBindingRecordAsync(conversation)).toBeNull();
+      expect(changes).toEqual(["pending", "unchanged"]);
+      expect(prepared.inspect()).toMatchObject([{ status: "available", binding: null }]);
+    } finally {
+      unsubscribe();
+      prepared.dispose();
+    }
+    expect(() => prepared.inspect()).toThrow("no longer active");
+  });
+});
+
+it("invalidates prepared effect ownership after committed binding replacement and deletion", async () => {
+  await withOpenClawTestState({ label: "binding-prepared-ownership" }, async () => {
+    const conversation = {
+      channel: INTERNAL_MESSAGE_CHANNEL,
+      accountId: "default",
+      conversationId: "prepared",
+    };
+    const original = await bindGenericCurrentConversation({
+      conversation,
+      targetSessionKey: "agent:main:original",
+      targetKind: "session",
+    });
+    expect(original).not.toBeNull();
+    const prepared = await prepareSessionBindingInspections([conversation]);
+    try {
+      const sql = observeHostDataSql();
+      try {
+        expect(prepared.inspect()).toMatchObject([{ binding: original }]);
+      } finally {
+        sql.restore();
+      }
+      expect(sql.queries).toEqual([]);
+      const replacement = { ...original!, targetSessionKey: "agent:main:replacement" };
+      await bindCurrentConversationRecordAsync({ record: replacement });
+      expect(() => prepared.inspect()).toThrow("ownership changed");
+      const current = await prepareSessionBindingInspections([conversation]);
+      try {
+        expect(current.inspect()).toMatchObject([{ binding: replacement }]);
+        await removeCurrentConversationBindingsAsync({ conversation });
+        expect(() => current.inspect()).toThrow("ownership changed");
+      } finally {
+        current.dispose();
+      }
+    } finally {
+      prepared.dispose();
+    }
+    expect(() => prepared.inspect()).toThrow("no longer active");
   });
 });
 
@@ -874,6 +948,16 @@ it("runs the V2 account manager's complete persistence lifecycle in workers", as
       toStoredTargetKind: (kind) => kind,
       toSessionBindingTargetKind: (kind) => kind,
     });
+    for (const method of [
+      "getByConversationId",
+      "listBySessionKey",
+      "bindConversation",
+      "touchConversation",
+      "unbindConversation",
+      "unbindBySessionKey",
+    ]) {
+      expect(manager).not.toHaveProperty(method);
+    }
     openOpenClawStateDatabase();
     const hostSql = observeHostDataSql();
     try {

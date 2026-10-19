@@ -1,11 +1,21 @@
+import { getRpcSourceIdentity } from "../../../sessions/session-controller.rpc-sources.js";
 import { captureExecRequestCancellation } from "../../bash-process-control.js";
 import type { SubagentKillSession } from "./subagent-control-session.js";
+import {
+  captureSubagentEmbeddedExecution,
+  captureSubagentExecution,
+} from "./subagent-registry-execution-cleanup.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
 /** Native admission may create its request owner after the initial Stop selection. */
 export function captureSubagentCommands(entry: SubagentRunRecord, session?: SubagentKillSession) {
-  const sessionId = session?.entry?.sessionId;
+  const captured = session && captureSubagentExecution({ entry, session });
+  const sessionId =
+    session?.entry?.sessionId ??
+    (captured ? getRpcSourceIdentity(captured.execution).sessionId : undefined) ??
+    captureSubagentEmbeddedExecution(entry)?.sessionId ??
+    entry.childSessionIdentity?.sessionId;
   if (!session || !sessionId) {
     return undefined;
   }

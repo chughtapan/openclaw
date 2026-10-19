@@ -1,3 +1,4 @@
+import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -7,10 +8,12 @@ import {
   setupCronRegressionFixtures,
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import "../../agents/test-helpers/fast-coding-tools.js";
+import { setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createScheduledGatewayRunner } from "../../gateway/scheduled-run-gateway-context.js";
 import { withOperatorToolGatewayAuthority } from "../../gateway/server-plugin-in-process-dispatch.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   readCronRunHistoryPageForTests,
   readCronRunRecordsForTests,
@@ -19,15 +22,17 @@ import { stop } from "../service/ops-lifecycle.js";
 import { list } from "../service/ops-read.js";
 import { enqueueRun } from "../service/ops-run.js";
 import type { CronEvent } from "../service/state.js";
-import { onTimer } from "../service/timer-scheduler.js";
+import { onTimer } from "../service/timer.test-support.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import type { CronStoredJob } from "../types.js";
 import {
   getChannelPluginMock,
   loadRunCronIsolatedAgentTurn,
+  makeCronSession,
   mockRunCronFallbackPassthrough,
   resetRunCronIsolatedAgentTurnHarness,
+  resolveCronSessionMock,
   runEmbeddedAgentMock,
 } from "./run.test-harness.js";
 
@@ -101,7 +106,17 @@ describe("scheduled account policy outcomes", () => {
       callerOrigin,
     }) => {
       const { storePath } = fixtures.makeStorePath();
-      const cfg: OpenClawConfig = { channels: { whatsapp: { accounts: { work: {} } } } };
+      const sessionRoot = path.join(
+        path.dirname(storePath),
+        path.basename(storePath, ".jobs.json"),
+      );
+      const sessionStorePath = path.join(sessionRoot, "sessions.json");
+      const cfg: OpenClawConfig = {
+        session: { store: sessionStorePath },
+        channels: { whatsapp: { accounts: { work: {} } } },
+      };
+      setRuntimeConfigSnapshot(cfg);
+      resolveCronSessionMock.mockReturnValue(makeCronSession({ storePath: sessionStorePath }));
       const job: CronStoredJob = {
         ...createDueIsolatedJob({
           id: name.replaceAll(" ", "-"),
@@ -210,6 +225,8 @@ describe("scheduled account policy outcomes", () => {
       } finally {
         continuePayload.resolve();
         stop(state);
+        await state.schedulerDrain;
+        await closeOpenClawAgentDatabasesAsync(sessionRoot);
       }
     },
   );

@@ -1,6 +1,5 @@
 /** MCP OAuth credential provider, flow coordinator, and login helpers. */
-import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { auth, type FetchLike } from "@modelcontextprotocol/client";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   type OpenClawStateAsyncLeaseContext,
@@ -336,6 +335,7 @@ async function runMcpOAuthAuthorizationAttempt(
     config: params.config,
     allowAuthorizationRedirect: true,
     suppressStoredTokens: params.suppressStoredTokens,
+    replaceAuthorization: Boolean(params.authorizationCode) || params.suppressStoredTokens,
     lease,
     login: params.login,
     storeContext: context,

@@ -6,13 +6,14 @@ import {
 } from "../../agents/cron-creator-authority-context.js";
 import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
 import {
+  captureRequesterContinuationCaller,
   prepareRequesterCronAuthority,
   promoteRequesterCronAuthority,
   consumeRequesterCronAuthorityAdmission,
   revokeRequesterCronAuthority,
-  withRequesterCronAuthority,
 } from "../../agents/subagents/requester-cron-authority.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
+import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import {
   claimAgentRunDelegatedAuthority,
@@ -70,6 +71,8 @@ export function registerPendingRequesterAuthorityCases({
         { kind: "external", channel: "discord" },
         { source: "channel-owner", isCurrent: () => true },
       )!;
+      const params = baseParams();
+      setRuntimeConfigSnapshot(params.cfg);
       try {
         await runWithCronCreatorAuthorityCapability(scope, () =>
           withGatewayToolCallerIdentity(
@@ -104,7 +107,6 @@ export function registerPendingRequesterAuthorityCases({
           kind === "inter-session"
             ? { kind: "inter_session" as const, sourceTool: "sessions_send" }
             : undefined;
-        const params = baseParams();
         params.command.senderIsOwner = kind === "fresh-owner";
         await runPrepared({
           ...params,
@@ -128,37 +130,35 @@ export function registerPendingRequesterAuthorityCases({
           },
         });
         expect(runReplyAgent).toHaveBeenCalledOnce();
-        await withRequesterCronAuthority(
-          {
-            requesterSessionKey: sessionKey,
-            requesterSessionId: sessionId,
-            requesterAgentId: "default",
-            batch,
-            rearmGeneration: 1,
+        await captureRequesterContinuationCaller({
+          requesterSessionKey: sessionKey,
+          requesterSessionId: sessionId,
+          requesterAgentId: "default",
+          batch,
+          rearmGeneration: 1,
+          runId: "successor",
+          isCurrent: () => true,
+        }).run(async () => {
+          const admission = consumeRequesterCronAuthorityAdmission({
             runId: "successor",
-            isCurrent: () => true,
-          },
-          async () => {
-            const admission = consumeRequesterCronAuthorityAdmission({
-              runId: "successor",
-              sessionKey,
-              sessionId,
-              inputProvenance: {
-                kind: "inter_session",
-                sourceTool: "subagent_settle",
-                sourceSessionKey: child.childSessionKey,
-              },
-            });
-            expect(Boolean(admission)).toBe(kind !== "fresh-non-owner" && kind !== "fresh-owner");
-            if (admission) {
-              expect(admission.callerOrigin).toEqual({ kind: "unknown" });
-            }
-          },
-        );
+            sessionKey,
+            sessionId,
+            inputProvenance: {
+              kind: "inter_session",
+              sourceTool: "subagent_settle",
+              sourceSessionKey: child.childSessionKey,
+            },
+          });
+          expect(Boolean(admission)).toBe(kind !== "fresh-non-owner" && kind !== "fresh-owner");
+          if (admission) {
+            expect(admission.callerOrigin).toEqual({ kind: "unknown" });
+          }
+        });
       } finally {
         revokeRequesterCronAuthority(sessionKey);
         releaseAgentRunDelegatedAuthority(authority);
         clearAgentRunContext(originalRunId);
+        clearRuntimeConfigSnapshot();
       }
     },
   );

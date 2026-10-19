@@ -7,9 +7,9 @@ import { renderUpdateRunReport } from "../../../src/infra/update-run-report.js";
 import { classifyUpdateOutcome } from "../../../src/shared/update-outcome.js";
 import type { GatewayBrowserClient, GatewayHelloOk } from "../api/gateway.ts";
 import type { UpdateAvailable, UpdateScheduleState } from "../api/types.ts";
+import type { CustodianTurnAdmission } from "../components/custodian-alert-contract.ts";
 import { t } from "../i18n/index.ts";
 import { formatUiError, formatUiExternalText } from "../lib/format-error.ts";
-import { readUpdateAvailableValue, readUpdateScheduleValue } from "./update-schedule-dto.ts";
 import { resolveHeldUpdateCampaignId } from "./update-schedule-projection.ts";
 
 export type ApplicationStatusBanner = {
@@ -40,10 +40,7 @@ export type UpdateFailureTriage = {
 
 type UpdateOutcomeRecord = { id: string | null; timestampMs: number | null };
 
-export type UpdateTriageAdmission = {
-  isCurrent: () => boolean;
-  admit: () => boolean;
-};
+export type UpdateTriageAdmission = CustodianTurnAdmission;
 
 const UPDATE_FAILURE_REASON_KEYS: Record<string, string> = {
   dirty: "updates.failureReasons.dirty",
@@ -236,7 +233,8 @@ export function createUpdateStatusRefresher(params: {
         .request<UpdateRestartStatusResponse>(
           "update.status",
           refreshCheckout ? { refreshCheckout: true } : {},
-          refreshCheckout ? undefined : { timeoutMs: 5_000 },
+          // Checkout discovery uses the Gateway's Git command budgets.
+          { timeoutMs: refreshCheckout ? null : 5_000 },
         )
         .catch((error: unknown) => {
           if (mode !== "background" && isCurrent()) {
@@ -251,17 +249,13 @@ export function createUpdateStatusRefresher(params: {
         if (refreshCheckout) {
           params.onError(null, "manual");
           params.onStatus(response);
-          // Discovery may finish after the fast read captured an empty schedule.
-          // Let that read settle before reconciling, without extending the button's lifetime.
-          void progress?.then(() => {
-            if (isCurrent()) {
-              void refresh("background");
-            }
-          });
-        } else {
-          params.onError(null, "completion");
-          params.onStatus(response);
+          // The fast read may predate the fetch. Reconcile the target before
+          // the caller opens confirmation.
+          await progress;
+          return isCurrent() && (await refresh("completion"));
         }
+        params.onError(null, "completion");
+        params.onStatus(response);
         return true;
       }
       return false;
@@ -298,11 +292,11 @@ function projectUpdateCheckoutResponse(
   current: { heldUpdateCampaignId: string | null; updateSchedule?: UpdateScheduleState | null },
 ) {
   const updateSchedule = Object.hasOwn(response, "schedule")
-    ? readUpdateScheduleValue(response.schedule)
+    ? (response.schedule ?? null)
     : undefined;
   return {
     ...(Object.hasOwn(response, "updateAvailable")
-      ? { updateAvailable: readUpdateAvailableValue(response.updateAvailable) }
+      ? { updateAvailable: response.updateAvailable ?? null }
       : {}),
     ...(updateSchedule !== undefined
       ? {

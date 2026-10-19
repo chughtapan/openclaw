@@ -5,10 +5,14 @@ import { admitCorrelatedSubagentSessionDelivery } from "../agents/subagents/comp
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { saveSubagentRegistryChangesToSqlite } from "../agents/subagents/registry/subagent-registry-state.fixture.test-support.js";
 import { readSubagentRun } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import * as queue from "../infra/session-delivery-queue-storage.js";
 import { SessionDeliveryDeadLetteredError } from "../infra/session-delivery-queue.records.js";
-import * as lifecycle from "../sessions/session-lifecycle-admission.js";
+import * as lifecycle from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
@@ -32,6 +36,7 @@ const writers = [
 ];
 
 async function seedContinuation() {
+  setRuntimeConfigSnapshot({});
   await upsertSessionEntryCore(base, { sessionId: "run-123", updatedAt: 1 });
   await upsertSessionEntryCore(exact, {
     sessionId: "run-123",
@@ -63,15 +68,18 @@ function createCorrelatedRun() {
   };
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  clearRuntimeConfigSnapshot();
+  vi.restoreAllMocks();
+});
 
 it.each(writers)("retains the alias while a $name enqueue owns admission", async ({ enqueue }) => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const context = await seedContinuation();
     const admitted = createDeferredCore();
     const resume = createDeferredCore();
-    const begin = lifecycle.beginSessionWorkAdmission;
-    vi.spyOn(lifecycle, "beginSessionWorkAdmission").mockImplementationOnce(async (params) => {
+    const begin = lifecycle.beginSessionEffect;
+    vi.spyOn(lifecycle, "beginSessionEffect").mockImplementationOnce(async (params) => {
       const lease = await begin(params);
       admitted.resolve();
       await resume.promise;
@@ -110,8 +118,8 @@ it.each(writers)(
       });
       const cleaning = removeCronRunContinuationSessionIfIdle(exact.sessionKey, undefined, context);
       await snapshotRead.promise;
-      const begin = lifecycle.beginSessionWorkAdmission;
-      vi.spyOn(lifecycle, "beginSessionWorkAdmission").mockImplementationOnce((params) => {
+      const begin = lifecycle.beginSessionEffect;
+      vi.spyOn(lifecycle, "beginSessionEffect").mockImplementationOnce((params) => {
         const pending = begin(params);
         reserved.resolve();
         return pending;
@@ -210,8 +218,8 @@ it("refuses correlated announcement publication when its source retires during s
     const sourceBefore = structuredClone(run);
     const admitted = createDeferredCore();
     const resume = createDeferredCore();
-    const begin = lifecycle.beginSessionWorkAdmission;
-    vi.spyOn(lifecycle, "beginSessionWorkAdmission").mockImplementationOnce(async (params) => {
+    const begin = lifecycle.beginSessionEffect;
+    vi.spyOn(lifecycle, "beginSessionEffect").mockImplementationOnce(async (params) => {
       const lease = await begin(params);
       admitted.resolve();
       await resume.promise;

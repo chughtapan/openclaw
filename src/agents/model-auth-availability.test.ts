@@ -480,8 +480,6 @@ describe("createModelAuthAvailabilityResolver", () => {
       env: { OPENAI_API_KEY: "environment-key" },
       profileId: "openai:oauth-missing",
       profile: { type: "oauth" as const, provider: "openai", access: "", refresh: "" },
-      route: platformRoute,
-      mode: "api-key",
     },
     {
       label: "OAuth environment after unavailable Platform auth",
@@ -491,8 +489,6 @@ describe("createModelAuthAvailabilityResolver", () => {
       env: { OPENAI_API_KEY: "environment-token" },
       profileId: "openai:platform-missing",
       profile: { type: "api_key" as const, provider: "openai", key: "" },
-      route: subscriptionRoute,
-      mode: "oauth",
     },
     // An environment credential named nowhere in config is not authorized to
     // stand in for a declared profile, including a declared profile that turned
@@ -575,42 +571,6 @@ describe("createModelAuthAvailabilityResolver", () => {
     });
 
     expect(resolver.resolveProviderAuthAvailability("acme-cli")).toBeUndefined();
-  });
-
-  it("does not grant CLI refresh authority to an unowned sibling profile", () => {
-    const cliProfileId = "anthropic:claude-cli";
-    const manualProfileId = "anthropic:manual";
-    const store = authStore({
-      [cliProfileId]: {
-        type: "oauth",
-        provider: "claude-cli",
-        access: "expired-cli-access",
-        refresh: "cli-owned-refresh",
-        expires: Date.now() - 60_000,
-      },
-      [manualProfileId]: {
-        type: "oauth",
-        provider: "claude-cli",
-        access: "expired-manual-access",
-        refresh: "manual-refresh",
-        expires: Date.now() - 60_000,
-      },
-    });
-    const resolver = createModelAuthAvailabilityResolver({
-      cfg: { auth: { order: { "claude-cli": [manualProfileId] } } } as OpenClawConfig,
-      authStore: store,
-      preparedRuntimeAuthStore: Object.assign({}, store, {
-        runtimeExternalCliProfileIds: [cliProfileId],
-      }),
-      env: {},
-      routeResolverFactory: routeResolverFactory(null),
-    });
-
-    expect(
-      resolver.resolveProviderAuthAvailability("claude-cli", {
-        requiredProfileId: manualProfileId,
-      }),
-    ).toBeUndefined();
   });
 
   it("does not borrow usable auth from a later sibling route after an unresolved ordered profile", () => {

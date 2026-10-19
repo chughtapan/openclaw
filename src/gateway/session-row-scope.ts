@@ -1,13 +1,15 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { listAgentIds, withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
-import { resolveGatewaySessionStoreTargets } from "../config/sessions/combined-store-gateway.js";
-import type { GatewaySessionStoreDiscovery } from "../config/sessions/combined-store-paths.js";
+import { applyGatewaySessionStoreAdmission } from "../config/sessions/combined-store-gateway.js";
+import type { CombinedSessionStoreScopeTargets } from "../config/sessions/combined-store.types.js";
 import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
 import { projectionLane } from "../config/sessions/session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabases } from "../config/sessions/session-transcript-worker-runtime.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { getPostgresPhysicalFactsForPath } from "../infra/database-engine/physical-facts.js";
+import { getSqliteDatabaseAdmissionIdentityForPath } from "../infra/sqlite-database-admission.js";
 import {
   isIncognitoSessionKey,
   normalizeAgentId,
@@ -150,7 +152,7 @@ export function createSessionRowRegistryRead(owner: {
                   ) &&
                   captured.some(
                     (store) =>
-                      `file:${String(store.identity)}` === source.identity &&
+                      `file:${store.identity}` === source.identity &&
                       store.target.agentId === source.agentId,
                   ),
               ),
@@ -248,18 +250,47 @@ export function prepareSessionRowScopes(
   cfg: OpenClawConfig,
   agentIds: Iterable<string>,
   residentPaths: ReadonlyMap<string, string>,
-  discovery?: GatewaySessionStoreDiscovery,
+  prepared: CombinedSessionStoreScopeTargets,
 ) {
+  const ownerAgentIds: ReadonlySet<string> = new Set(listAgentIds(cfg));
   const residentPath = (pathname: string) => residentPaths.get(pathname) ?? pathname;
   const filenames = new Map([...residentPaths].map(([filename, locator]) => [locator, filename]));
+  const admittedIdentity = (pathname: string) => {
+    const identity = getSqliteDatabaseAdmissionIdentityForPath(pathname);
+    if (!identity) {
+      return undefined;
+    }
+    const postgres = getPostgresPhysicalFactsForPath(pathname);
+    return JSON.stringify(
+      postgres
+        ? ["postgres", postgres.namespace, postgres.storeId]
+        : ["sqlite", identity.key, identity.birthtime],
+    );
+  };
+  const admittedPaths = new Map<string, string>();
+  for (const [filename, locator] of residentPaths) {
+    const identity = admittedIdentity(filename);
+    if (identity) {
+      admittedPaths.set(identity, locator);
+    }
+  }
   const aliases = new Map<string, Map<string, string>>();
   const capture = (options: { agentId?: string; configuredAgentsOnly?: boolean }) => {
     try {
-      const resolved = resolveGatewaySessionStoreTargets(cfg, {
-        ...options,
-        discovery,
-        includeIncognito: false,
-      });
+      const key = options.agentId
+        ? `agent:${options.agentId}`
+        : options.configuredAgentsOnly
+          ? "configured"
+          : "all";
+      const captured = prepared.get(key);
+      if (captured instanceof Error) {
+        return captured;
+      }
+      const resolved = applyGatewaySessionStoreAdmission(
+        cfg,
+        { ...options, includeIncognito: false },
+        expectDefined(captured, "prepared scope topology"),
+      );
       for (const [identity, physical] of resolved.physicalTargets) {
         const separator = identity.indexOf("\0");
         const agentId = identity.slice(0, separator);
@@ -280,6 +311,7 @@ export function prepareSessionRowScopes(
         paths: new Map(paths.map((pathname, index) => [pathname, index])),
         path: paths.length === 1 ? (filenames.get(paths[0]!) ?? paths[0]!) : "(multiple)",
         configuredAgentIds: resolved.configuredAgentIds,
+        ownerAgentIds,
         agentId: resolved.requestedAgentId,
       };
     } catch (error) {
@@ -289,10 +321,7 @@ export function prepareSessionRowScopes(
   const all = capture({});
   const configured = capture({ configuredAgentsOnly: true });
   const agents = new Map(
-    [...new Set([...listAgentIds(cfg), ...agentIds])].map((agentId) => [
-      agentId,
-      capture({ agentId }),
-    ]),
+    [...new Set([...ownerAgentIds, ...agentIds])].map((agentId) => [agentId, capture({ agentId })]),
   );
   const select = (options: { agentId?: string; configuredAgentsOnly?: boolean }) => {
     const requestedAgentId = options.agentId?.trim()
@@ -304,6 +333,7 @@ export function prepareSessionRowScopes(
           path: "(multiple)",
           agentId: requestedAgentId,
           configuredAgentIds: undefined,
+          ownerAgentIds,
         })
       : options.configuredAgentsOnly
         ? configured
@@ -315,9 +345,13 @@ export function prepareSessionRowScopes(
   };
   return {
     select,
-    physicalPaths(locator: string, agentId?: string) {
+    physicalPaths(this: void, locator: string, agentId?: string) {
       // Resident physical locators were normalized when the topology was prepared.
-      const normalized = filenames.has(locator) ? locator : residentPath(path.resolve(locator));
+      let normalized = filenames.has(locator) ? locator : residentPath(path.resolve(locator));
+      if (!filenames.has(normalized) && !aliases.has(normalized)) {
+        const identity = admittedIdentity(normalized);
+        normalized = (identity && admittedPaths.get(identity)) || normalized;
+      }
       const owners = aliases.get(normalized);
       return agentId
         ? [owners?.get(normalizeAgentId(agentId)) ?? normalized]
@@ -335,6 +369,7 @@ type SessionRowEntrySelection = {
   byParent: ReadonlyMap<string, ReadonlySet<string>>;
   rows: ReadonlyMap<string, records.Row>;
   dirty: ReadonlySet<string>;
+  hasUnresolvedCategories: boolean;
   matching: (query: records.Query, kind?: string) => records.Row[];
   acquire: (row: records.Row) => records.Row | undefined;
   referenced: (reference: string) => records.Row | undefined;
@@ -416,19 +451,20 @@ function selectSessionRowEntries(params: SessionRowEntrySelection, query: record
   const candidates = keys
     ? [...keys].flatMap((key) => matching({ ...query, key }))
     : matching(query);
-  const pending: records.Lookup[] = [];
-  for (const row of candidates) {
-    if (row.unresolvedDatabaseFacts === "category" && matches(row)) {
-      pending.push({ agentId: row.agentId, key: row.key, storePath: row.storeTarget.storePath });
-      if (pending.length === MAX_SESSION_ROW_FACTS_KEYS) {
-        break;
+  // The facts owner tracks category uncertainty even when display rows are evicted.
+  if (params.hasUnresolvedCategories) {
+    const pending: records.Lookup[] = [];
+    for (const row of candidates) {
+      if (row.unresolvedDatabaseFacts === "category" && matches(row)) {
+        pending.push({ agentId: row.agentId, key: row.key, storePath: row.storeTarget.storePath });
+        if (pending.length === MAX_SESSION_ROW_FACTS_KEYS) {
+          break;
+        }
       }
     }
-  }
-  // Synchronous selection cannot consume unresolved categories, even when a
-  // metadata-only caller omits dirty rows. Exact preparation remains bounded.
-  if (pending.length > 0) {
-    throw new SessionRowFactsPending(pending);
+    if (pending.length > 0) {
+      throw new SessionRowFactsPending(pending);
+    }
   }
   const acquired =
     sessionIdOrKey || dirty.size === 0
