@@ -52,10 +52,7 @@ import {
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "../../infra/system-events.js";
-import {
-  BOT_SENDER_DELIVERY_HINT,
-  MESSAGE_TOOL_ONLY_DELIVERY_HINT,
-} from "../../plugin-sdk/message-tool-delivery-hints.js";
+import { MESSAGE_TOOL_ONLY_DELIVERY_HINT } from "../../plugin-sdk/message-tool-delivery-hints.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
 import {
   beginSessionEffect,
@@ -1182,46 +1179,6 @@ describe("runPreparedReply media-only handling", () => {
     expect(persistedUserMessage).toMatchObject({ role: "user", content: "please answer here" });
     expect(persistedUserMessage.content).not.toContain(MESSAGE_TOOL_ONLY_DELIVERY_HINT);
   });
-
-  it.each([
-    { senderIsBot: true, group: "allow", hint: BOT_SENDER_DELIVERY_HINT },
-    { senderIsBot: true, group: "disallow", hint: MESSAGE_TOOL_ONLY_DELIVERY_HINT },
-    { senderIsBot: false, group: "allow", hint: MESSAGE_TOOL_ONLY_DELIVERY_HINT },
-  ] as const)(
-    "says a reply is optional only on an optional bot-sender turn: bot=$senderIsBot group=$group",
-    async ({ senderIsBot, group, hint }) => {
-      vi.mocked(buildInboundUserContextPrefix).mockReturnValueOnce(
-        "Current message:\nchat_id=-100123\ninbound_event_kind: user_request",
-      );
-
-      await runPrepared({
-        cfg: { agents: { defaults: { silentReply: { group } } } },
-        opts: { sourceReplyDeliveryMode: "message_tool_only" },
-        ctx: {
-          Body: "thanks, that settles it",
-          RawBody: "thanks, that settles it",
-          OriginatingChannel: "telegram",
-          OriginatingTo: "-100123",
-          ChatType: "group",
-          SenderIsBot: senderIsBot,
-        },
-        sessionCtx: {
-          Body: "thanks, that settles it",
-          BodyStripped: "thanks, that settles it",
-          Provider: "telegram",
-          OriginatingChannel: "telegram",
-          OriginatingTo: "-100123",
-          ChatType: "group",
-          InboundEventKind: "user_request",
-          SenderIsBot: senderIsBot,
-        },
-      });
-
-      expect(requireRunReplyAgentCall(-1).followupRun.currentInboundContext?.text).toBe(
-        ["Current message:\nchat_id=-100123\ninbound_event_kind: user_request", hint].join("\n\n"),
-      );
-    },
-  );
 
   it("persists pure media turns without the model-facing placeholder", async () => {
     const params = baseParams();

@@ -16,10 +16,6 @@ import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { normalizeMediaFacts, type MediaFact } from "../../media/media-facts.js";
 import {
-  BOT_SENDER_DELIVERY_HINT,
-  MESSAGE_TOOL_ONLY_DELIVERY_HINT,
-} from "../../plugin-sdk/message-tool-delivery-hints.js";
-import {
   isAcpSessionKey,
   isSubagentSessionKey,
   normalizeMainKey,
@@ -70,6 +66,7 @@ import { resolveSessionStableReplyMode } from "./session-stable-reply-mode.js";
 import {
   isInternalSourceReplyChannel,
   resolveSourceReplyExpectation,
+  resolveUserRequestDeliveryHint,
 } from "./source-reply-delivery-mode.js";
 import { shouldApplyStartupContext, buildSessionStartupContextPrelude } from "./startup-context.js";
 import { resolveTypingMode } from "./typing-mode.js";
@@ -478,9 +475,10 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
         : ROOM_EVENT_PARTICIPATION_RULE;
     }
     if (inboundEventKind === "user_request" && sourceReplyDeliveryMode === "message_tool_only") {
-      return promptSessionCtx.SenderIsBot === true && terminalReplyExpectation === "optional"
-        ? BOT_SENDER_DELIVERY_HINT
-        : MESSAGE_TOOL_ONLY_DELIVERY_HINT;
+      return resolveUserRequestDeliveryHint({
+        senderIsBot: promptSessionCtx.SenderIsBot,
+        replyExpectation: terminalReplyExpectation,
+      });
     }
     return undefined;
   }
