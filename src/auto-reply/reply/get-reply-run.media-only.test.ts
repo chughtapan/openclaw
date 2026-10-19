@@ -1218,9 +1218,7 @@ describe("runPreparedReply media-only handling", () => {
       });
 
       expect(requireRunReplyAgentCall(-1).followupRun.currentInboundContext?.text).toBe(
-        ["Current message:\nchat_id=-100123\ninbound_event_kind: user_request", hint].join(
-          "\n\n",
-        ),
+        ["Current message:\nchat_id=-100123\ninbound_event_kind: user_request", hint].join("\n\n"),
       );
     },
   );
