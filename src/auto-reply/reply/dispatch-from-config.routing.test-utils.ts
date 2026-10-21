@@ -454,6 +454,32 @@ describe("dispatchReplyFromConfig", () => {
     ).rejects.toThrow();
   });
 
+  it("sends a bot sender's ask_user prompt to the owner instead of its conversation", async () => {
+    setNoAbort();
+    const payload = {
+      text: "Question for you: May Mara book Thursday at 2pm?",
+      channelData: { askUser: { questionId: "question-from-bot" } },
+    } satisfies ReplyPayload;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ Provider: "telegram", ChatType: "direct", SenderIsBot: true });
+    const replyResolver = async (_ctx: MsgContext, opts?: GetReplyOptions) => {
+      await requireToolResultHandler(opts?.onToolResult)(payload);
+      return undefined;
+    };
+
+    await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
+
+    expect(askUserMocks.sendQuestionPromptToOwner).toHaveBeenCalledOnce();
+    expect(
+      firstMockCall(askUserMocks.sendQuestionPromptToOwner, "owner question prompt")[0],
+    ).toMatchObject({
+      cfg: emptyConfig,
+      payload,
+    });
+    expect(dispatcher.sendToolResult).not.toHaveBeenCalled();
+    expect(mocks.routeReply).not.toHaveBeenCalled();
+  });
+
   it("rejects ask_user prompts declined by the dispatcher", async () => {
     setNoAbort();
     const payload = {

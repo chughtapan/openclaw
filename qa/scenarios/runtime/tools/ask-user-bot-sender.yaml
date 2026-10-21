@@ -1,0 +1,117 @@
+title: Ask user question from a bot sender's turn goes to the owner
+
+scenario:
+  id: runtime-tool-ask-user-bot-sender
+  surface: runtime-tool
+  coverage:
+    primary:
+      - agent-runtime.tool-ask-user
+    secondary:
+      - channels.qa-channel-outbound
+  objective: Verify that an ask_user question raised while answering another agent reaches the agent's owner instead of that agent's conversation, and that the owner's answer resumes the run.
+  gatewayConfigPatch:
+    commands:
+      ownerAllowFrom: [alice]
+  successCriteria:
+    - A bot sender's message starts a turn that calls ask_user once.
+    - QA Channel delivers the question prompt to the owner's direct conversation, and the bot's conversation receives none.
+    - The owner's answer reaches the resumed run, and its reply reaches the bot's conversation.
+  docsRefs:
+    - docs/tools/ask-user.md
+    - docs/plugins/sdk-channel-plugins.md
+    - docs/channels/qa-channel.md
+  codeRefs:
+    - src/agents/tools/question-prompt-send.ts
+    - src/auto-reply/reply/dispatch-from-config.execute.ts
+    - extensions/qa-channel/src/inbound.ts
+  execution:
+    kind: flow
+    summary: Send an inbound turn from a bot sender, observe its ask_user prompt in the owner's conversation, resolve it, and verify the resumed reply.
+    config:
+      requiredProviderMode: mock-openai
+      requiredProvider: mock-openai
+      peerConversationId: qa-ask-user-peer-agent
+      ownerConversationId: alice
+      promptNeedle: Where should this deploy?
+      prompt: >-
+        Structured question QA check from a peer agent. Call ask_user exactly once with the
+        deploy_target question, then reply with the selected value.
+        ask_user_fixture=single
+        QA routing marker: tool search qa check target=ask_user.
+
+flow:
+  steps:
+    - name: sends the bot sender's question to the owner and resumes on the owner's answer
+      actions:
+        - call: waitForGatewayHealthy
+          args:
+            - ref: env
+            - 60000
+        - call: waitForQaChannelReady
+          args:
+            - ref: env
+            - 60000
+        - call: reset
+        - set: requestCursorBefore
+          value:
+            expr: "(await fetchJson(`${env.mock.baseUrl}/debug/request-cursor`)).cursor"
+        - set: startIndex
+          value:
+            expr: state.getSnapshot().messages.length
+        - sendInbound:
+            conversation:
+              id:
+                ref: config.peerConversationId
+              kind: direct
+            senderId:
+              ref: config.peerConversationId
+            senderName: Peer Agent
+            senderIsBot: true
+            text:
+              ref: config.prompt
+        - call: waitForCondition
+          saveAs: pendingQuestion
+          args:
+            - lambda:
+                async: true
+                expr: "(await env.gateway.call('question.list', {})).questions.find((question) => question.status === 'pending' && question.questions.some((entry) => entry.question === config.promptNeedle))"
+            - expr: liveTurnTimeoutMs(env, 45000)
+            - 100
+        - call: waitForCondition
+          saveAs: promptMessage
+          args:
+            - lambda:
+                expr: "state.getSnapshot().messages.slice(startIndex).find((candidate) => candidate.direction === 'outbound' && candidate.conversation.id === config.ownerConversationId && candidate.text.includes(config.promptNeedle))"
+            - expr: liveTurnTimeoutMs(env, 45000)
+            - 100
+        - assert:
+            expr: "!state.getSnapshot().messages.slice(startIndex).some((candidate) => candidate.direction === 'outbound' && candidate.conversation.id === config.peerConversationId && candidate.text.includes(config.promptNeedle))"
+            message: the bot sender's conversation received the question prompt
+        - set: resolution
+          value:
+            expr: >-
+              env.gateway.call('question.resolve', {
+                id: pendingQuestion.id,
+                answers: { answers: { deploy_target: ['Production'] } },
+                resolvedBy: 'qa-lab',
+              })
+        - assert:
+            expr: "resolution.status === 'answered'"
+            message:
+              expr: "`ask_user resolution failed: ${JSON.stringify(resolution)}`"
+        - call: waitForCondition
+          saveAs: resumedProviderRequest
+          args:
+            - lambda:
+                async: true
+                expr: "(await fetchJson(`${env.mock.baseUrl}/debug/requests?after=${requestCursorBefore}`)).find((request) => String(request.toolOutput ?? '').includes('Deploy:') && String(request.toolOutput).includes('Production'))"
+            - expr: liveTurnTimeoutMs(env, 45000)
+            - 100
+        - call: waitForCondition
+          saveAs: finalMessage
+          args:
+            - lambda:
+                expr: "state.getSnapshot().messages.slice(startIndex).find((candidate) => candidate.direction === 'outbound' && candidate.conversation.id === config.peerConversationId && !candidate.deleted)"
+            - expr: liveTurnTimeoutMs(env, 45000)
+            - 100
+      detailsExpr: "`question sent to ${promptMessage.conversation.id}; reply sent to ${finalMessage.conversation.id}`"

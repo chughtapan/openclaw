@@ -56,6 +56,7 @@ const globalMocks = vi.hoisted(() => ({
 }));
 const askUserMocks = vi.hoisted(() => ({
   isAskUserPromptPending: vi.fn(async (_questionId: string) => true),
+  sendQuestionPromptToOwner: vi.fn(async (_params: { payload: unknown }) => {}),
 }));
 const diagnosticMocks = vi.hoisted(() => ({
   logMessageDispatchCompleted: vi.fn(),
@@ -335,6 +336,11 @@ vi.mock("../../globals.js", async (importOriginal) => {
 
 vi.mock("../../agents/tools/ask-user-tool.js", () => ({
   isAskUserPromptPending: askUserMocks.isAskUserPromptPending,
+}));
+
+vi.mock("../../agents/tools/question-prompt-send.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/tools/question-prompt-send.js")>()),
+  sendQuestionPromptToOwner: askUserMocks.sendQuestionPromptToOwner,
 }));
 
 vi.mock("../../logging/diagnostic.js", async (importOriginal) => {
@@ -674,6 +680,7 @@ export function createDispatcher(): ReplyDispatcher {
 
 export function resetPluginTtsAndThreadMocks() {
   askUserMocks.isAskUserPromptPending.mockReset().mockResolvedValue(true);
+  askUserMocks.sendQuestionPromptToOwner.mockReset().mockResolvedValue(undefined);
   pluginConversationBindingMocks.shownFallbackNoticeBindingIds.clear();
   ttsMocks.state.synthesizeFinalAudio = false;
   ttsMocks.state.synthesizeToolAudio = false;

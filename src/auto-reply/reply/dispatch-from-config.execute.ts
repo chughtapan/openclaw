@@ -7,6 +7,7 @@ import {
 import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
 import { isRequiredReplyExpectation } from "../../agents/reply-completion.js";
 import { isAskUserPromptPending } from "../../agents/tools/ask-user-tool.js";
+import { sendQuestionPromptToOwner } from "../../agents/tools/question-prompt-send.js";
 import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
 import { normalizeAgentPlanSteps } from "../../channels/streaming.js";
 import { logVerbose } from "../../globals.js";
@@ -444,6 +445,16 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                     return;
                   }
                   state.assertProgressCurrent();
+                  // A bot sender's conversation has no person to answer a question.
+                  if (askUserQuestionId !== undefined && ctx.SenderIsBot === true) {
+                    await sendQuestionPromptToOwner({
+                      cfg,
+                      agentId: state.sessionAgentId,
+                      payload: deliveryPayload,
+                      signal: getDispatchAbortOperation()?.abortSignal,
+                    });
+                    return;
+                  }
                   if (shouldRouteToOriginating) {
                     await sendPayloadAsync(deliveryPayload);
                   } else {

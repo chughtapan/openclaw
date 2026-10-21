@@ -45,9 +45,12 @@ shared `message` tool. Your plugin owns:
   capability-configuration hint. Return no button instructions when the account
   has buttons disabled. The flag defaults to `false`.
 - **Question input** - declare `agentPrompt.questionInputMode: "buttons"` only
-  when your channel supports native `ask_user` controls. Core resolves this from
-  the inbound channel when preparing the conversation's tool capabilities;
-  omission keeps `ask_user` out of the tool catalog so the agent asks in plain text.
+  when your channel supports native `ask_user` controls. Declare `"owner"` when
+  every sender on the channel is another agent: core then sends `ask_user`
+  questions to the agent's owner route instead of the conversation, so set
+  `SenderIsBot` on every inbound turn. Core resolves this from the inbound
+  channel when preparing the conversation's tool capabilities; omission keeps
+  `ask_user` out of the tool catalog so the agent asks in plain text.
 
 Core owns the shared message tool, prompt wiring, the outer session-key shape,
 generic `:thread:` bookkeeping, and dispatch. For configured agent group

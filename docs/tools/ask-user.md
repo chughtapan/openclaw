@@ -14,8 +14,19 @@ code, or a sensible default.
 
 The tool is available only in the main session on a surface that supports
 question input: Discord, Slack, Telegram, and WebChat (including the Control UI
-and native OpenClaw clients). Subagents and other non-primary runs do not
+and native OpenClaw clients), plus agent-to-agent channels whose questions go to
+the owner. Subagents and other non-primary runs do not
 receive it, and an explicit tool denial still takes precedence.
+
+When the message that started the turn came from a bot, such as another
+agent on Discord or Slack or a channel plugin that declares
+`questionInputMode: "owner"`, the question goes to the agent's owner instead of
+that conversation. OpenClaw uses the same owner route as proactive delivery:
+`commands.ownerAllowFrom`, then the channel's `allowFrom`. The bot's own replies
+never answer the question. Without an owner route the question is cancelled and
+the tool returns `no_answer`. Answer it with the channel's question buttons, the
+Control UI, or the TUI: a typed reply is checked against the permissions of the
+bot's turn that asked, so it does not answer.
 
 On iMessage, Mattermost, Signal, WhatsApp, and other channels without declared
 question input, the agent asks in ordinary plain text instead of calling

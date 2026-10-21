@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
 const sendDurableMessageBatchCore = vi.hoisted(() => vi.fn());
+const resolveProactiveDeliveryTarget = vi.hoisted(() => vi.fn());
 
 vi.mock("../../channels/message/runtime.js", () => ({
   sendDurableMessageBatchCore: (...args: unknown[]) => sendDurableMessageBatchCore(...args),
@@ -13,7 +14,14 @@ vi.mock("../../channels/message/runtime.js", () => ({
     result.status === "sent" || result.status === "partial_failed",
 }));
 
-import { createChannelQuestionPromptDelivery } from "./question-prompt-send.js";
+vi.mock("../../infra/outbound/targets.js", () => ({
+  resolveProactiveDeliveryTarget: (...args: unknown[]) => resolveProactiveDeliveryTarget(...args),
+}));
+
+import {
+  createChannelQuestionPromptDelivery,
+  sendQuestionPromptToOwner,
+} from "./question-prompt-send.js";
 
 const cfg = {} as OpenClawConfig;
 const receipt = {
@@ -119,5 +127,48 @@ describe("createChannelQuestionPromptDelivery", () => {
     });
 
     await expect(delivery?.send({ text: "Question for you:" })).resolves.toBeUndefined();
+  });
+});
+
+describe("sendQuestionPromptToOwner", () => {
+  beforeEach(() => {
+    sendDurableMessageBatchCore.mockReset();
+    resolveProactiveDeliveryTarget.mockReset();
+  });
+
+  it("sends the prompt on the agent's owner route", async () => {
+    resolveProactiveDeliveryTarget.mockResolvedValueOnce({
+      channel: "telegram",
+      to: "42",
+      accountId: "default",
+    });
+    sendDurableMessageBatchCore.mockResolvedValueOnce({ status: "sent", results: [], receipt });
+    const payload = { text: "Question for you:" };
+
+    await sendQuestionPromptToOwner({ cfg, agentId: "main", payload });
+
+    expect(resolveProactiveDeliveryTarget).toHaveBeenCalledWith({
+      cfg,
+      agentId: "main",
+      policy: { target: "owner" },
+    });
+    expect(sendDurableMessageBatchCore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "telegram",
+        to: "42",
+        accountId: "default",
+        payloads: [payload],
+        durability: "required",
+      }),
+    );
+  });
+
+  it("fails without an owner route, so the question is cancelled", async () => {
+    resolveProactiveDeliveryTarget.mockResolvedValueOnce({ channel: "none", reason: "no-route" });
+
+    await expect(
+      sendQuestionPromptToOwner({ cfg, agentId: "main", payload: { text: "Question for you:" } }),
+    ).rejects.toThrow("no owner route");
+    expect(sendDurableMessageBatchCore).not.toHaveBeenCalled();
   });
 });

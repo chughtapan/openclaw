@@ -621,8 +621,12 @@ export type ChannelMessagingAdapter = {
 };
 
 export type ChannelAgentPromptAdapter = {
-  /** Native controls that can present and resolve structured user questions. */
-  questionInputMode?: "buttons";
+  /**
+   * How the channel's conversations take structured user questions: `buttons`
+   * presents and resolves them with native controls; `owner` declares that every
+   * sender is an agent marked `SenderIsBot`, so questions go to the agent's owner.
+   */
+  questionInputMode?: "buttons" | "owner";
   /** The channel supplies its own inline-button guidance through messageToolHints. */
   customInlineButtonHint?: boolean;
   messageToolHints?: (params: { cfg: OpenClawConfig; accountId?: string | null }) => string[];

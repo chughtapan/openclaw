@@ -7,6 +7,7 @@ import {
 } from "../../channels/message/runtime.js";
 import { resolveControlUiSessionLinkBase } from "../../config/control-ui-link-base.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveProactiveDeliveryTarget } from "../../infra/outbound/targets.js";
 import { runWithQuestionChannelDeliveries } from "../../infra/question-channel-runtime.js";
 import {
   isDeliverableMessageChannel,
@@ -45,34 +46,85 @@ export function createChannelQuestionPromptDelivery(params: {
   }
   return {
     messageChannel: channel,
-    send: async (payload, options) => {
-      const send = await sendDurableMessageBatchCore({
+    send: (payload, options) =>
+      sendQuestionPromptToRoute({
         cfg,
         channel,
         to,
         accountId: params.accountId,
         threadId: params.threadId ?? undefined,
-        payloads: [payload],
-        bestEffort: false,
-        durability: "required",
-        deliveryRetryOwner: "caller",
+        payload,
         signal: options?.signal,
-      });
-      // Fail closed when the durable batch did not reach the chat. ask_user then
-      // cancels instead of waiting on Control UI after a suppressed or failed send.
-      if (durableMessageBatchMayHaveReachedRecipient(send)) {
-        return;
-      }
-      if (send.status === "failed") {
-        throw send.error;
-      }
-      throw new Error(
-        send.status === "suppressed"
-          ? `question prompt delivery was suppressed: ${send.reason}`
-          : "question prompt delivery did not reach the conversation",
-      );
-    },
+      }),
   };
+}
+
+/**
+ * Publishes a question prompt raised on a turn whose sender is a bot to the
+ * agent's owner. The bot's conversation has no person who can answer, so the
+ * prompt takes the owner route proactive delivery uses: `commands.ownerAllowFrom`,
+ * then a channel's own `allowFrom`. Without one the send fails and the
+ * question is cancelled, as for any undelivered prompt.
+ */
+export async function sendQuestionPromptToOwner(params: {
+  cfg: OpenClawConfig;
+  agentId?: string;
+  payload: ReplyPayload;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const target = await resolveProactiveDeliveryTarget({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    policy: { target: "owner" },
+  });
+  if (target.channel === "none" || !target.to) {
+    throw new Error("question prompt delivery has no owner route for a bot sender's turn");
+  }
+  await sendQuestionPromptToRoute({
+    cfg: params.cfg,
+    channel: target.channel,
+    to: target.to,
+    accountId: target.accountId,
+    threadId: target.threadId,
+    payload: params.payload,
+    signal: params.signal,
+  });
+}
+
+async function sendQuestionPromptToRoute(params: {
+  cfg: OpenClawConfig;
+  channel: string;
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+  payload: ReplyPayload;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const send = await sendDurableMessageBatchCore({
+    cfg: params.cfg,
+    channel: params.channel,
+    to: params.to,
+    accountId: params.accountId,
+    threadId: params.threadId,
+    payloads: [params.payload],
+    bestEffort: false,
+    durability: "required",
+    deliveryRetryOwner: "caller",
+    signal: params.signal,
+  });
+  // Fail closed when the durable batch did not reach the chat. ask_user then
+  // cancels instead of waiting on Control UI after a suppressed or failed send.
+  if (durableMessageBatchMayHaveReachedRecipient(send)) {
+    return;
+  }
+  if (send.status === "failed") {
+    throw send.error;
+  }
+  throw new Error(
+    send.status === "suppressed"
+      ? `question prompt delivery was suppressed: ${send.reason}`
+      : "question prompt delivery did not reach the conversation",
+  );
 }
 
 /**

@@ -220,6 +220,16 @@ describe("openclaw-tools progress_card gating", () => {
     ).toContain("ask_user");
   });
 
+  it("offers ask_user where questions go to the owner, not where the channel takes none", () => {
+    const includeAskUser = (questionInputMode: "owner" | "none") =>
+      shouldIncludePrimarySessionToolForOpenClawTools("ask_user", {
+        agentSessionKey: "agent:main:main",
+        questionInputMode,
+      });
+    expect(includeAskUser("owner")).toBe(true);
+    expect(includeAskUser("none")).toBe(false);
+  });
+
   it("keeps message tool in embedded message-tool-only completions", () => {
     setEmbeddedMode(true);
     const tools = createTestOpenClawTools({

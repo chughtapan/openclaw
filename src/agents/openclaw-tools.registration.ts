@@ -141,7 +141,8 @@ export function shouldIncludePrimarySessionToolForOpenClawTools(
   if (
     toolName === "ask_user" &&
     params.questionInputMode !== "native" &&
-    params.questionInputMode !== "buttons"
+    params.questionInputMode !== "buttons" &&
+    params.questionInputMode !== "owner"
   ) {
     return false;
   }
