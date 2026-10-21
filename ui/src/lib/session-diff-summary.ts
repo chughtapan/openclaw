@@ -2,10 +2,11 @@ import type { SessionsDiffResult } from "../../../packages/gateway-protocol/src/
 import { gatewayPresentationScope } from "../app/gateway-presentation-scope.ts";
 import type { ApplicationGateway } from "../app/gateway.ts";
 import { createGatewayConnectionLifecycle } from "./gateway-connection-lifecycle.ts";
+import { listen } from "./reactive/listener.ts";
 
 type Summary = { fileCount: number; additions: number; deletions: number; truncated: boolean };
 type Snapshot = { summary: Summary | null; stale: boolean; unavailable: boolean };
-type Entry = Snapshot & { checkedAt?: number };
+type Entry = Snapshot & { checkedAt?: number; computing?: boolean };
 type Input = {
   gateway: ApplicationGateway | undefined;
   sessionKey: string;
@@ -16,7 +17,6 @@ type Input = {
 };
 const empty = (): Entry => ({ summary: null, stale: false, unavailable: false });
 
-/** Details owns a small metadata cache; the full Review diff has a separate lifetime. */
 export function createSessionDiffSummary(document: Document, isConnected = () => true) {
   let input: Input | undefined;
   let gateway: ApplicationGateway | undefined;
@@ -25,14 +25,12 @@ export function createSessionDiffSummary(document: Document, isConnected = () =>
   let unsubscribe: (() => void) | undefined;
   let current = empty();
   const entries = new Map<string, Entry>();
-  const listeners = new Set<() => void>();
+  let render: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let pending = false;
   let disposed = false;
   const publish = () => {
-    for (const listener of listeners) {
-      listener();
-    }
+    render?.();
   };
   const clearTimer = () => {
     clearTimeout(timer);
@@ -75,7 +73,7 @@ export function createSessionDiffSummary(document: Document, isConnected = () =>
     ) {
       return;
     }
-    const interval = input.runActive ? 5_000 : 30_000;
+    const interval = current.computing ? 500 : input.runActive ? 5_000 : 30_000;
     const delay =
       current.checkedAt === undefined ? 0 : Math.max(0, current.checkedAt + interval - Date.now());
     timer = setTimeout(() => {
@@ -104,6 +102,7 @@ export function createSessionDiffSummary(document: Document, isConnected = () =>
       ...(input.agentId ? { agentId: input.agentId } : {}),
       scope: "all",
       summaryOnly: true,
+      poll: true,
     };
     const connectionOwner = lifecycle;
     const isCurrent = () =>
@@ -116,6 +115,10 @@ export function createSessionDiffSummary(document: Document, isConnected = () =>
     try {
       const result = await connection.client.request<SessionsDiffResult>("sessions.diff", target);
       if (!isCurrent()) {
+        return;
+      }
+      owner.computing = result.computing === true;
+      if (owner.computing) {
         return;
       }
       if (result.unavailableReason) {
@@ -135,6 +138,7 @@ export function createSessionDiffSummary(document: Document, isConnected = () =>
       if (!isCurrent()) {
         return;
       }
+      owner.computing = false;
       owner.unavailable = true;
       owner.stale = owner.summary !== null;
     } finally {
@@ -161,15 +165,15 @@ export function createSessionDiffSummary(document: Document, isConnected = () =>
     }
     schedule();
   }
-  document.addEventListener("visibilitychange", schedule);
+  const stopVisibility = listen(document, "visibilitychange", schedule);
   return {
     get snapshot(): Snapshot {
       return current;
     },
     subscribe(listener: () => void) {
-      listeners.add(listener);
+      render = listener;
       return () => {
-        listeners.delete(listener);
+        render = undefined;
       };
     },
     update(next: Input) {
@@ -183,6 +187,7 @@ export function createSessionDiffSummary(document: Document, isConnected = () =>
         entries.clear();
         gateway = next.gateway;
         lifecycle = gateway ? createGatewayConnectionLifecycle(gateway.snapshot) : undefined;
+        // Gateway receipts invalidate this Details metadata cache; the full Review diff has a separate lifetime.
         unsubscribe = gateway?.subscribe(connectionChanged);
       }
       select();
@@ -193,9 +198,9 @@ export function createSessionDiffSummary(document: Document, isConnected = () =>
       clearTimer();
       unsubscribe?.();
       lifecycle?.dispose();
-      document.removeEventListener("visibilitychange", schedule);
+      stopVisibility();
       entries.clear();
-      listeners.clear();
+      render = undefined;
     },
   };
 }

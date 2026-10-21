@@ -1,4 +1,4 @@
-import { createMemo, createSignal, createStore, For, onCleanup, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, createStore, For, onSettled, Show } from "solid-js";
 import type {
   MemoryMigrationProviderPlan,
   MigrationsMemoryApplyResult,
@@ -130,7 +130,6 @@ function OnboardingMemoryImportContent(props: Props, host: OnboardingMemoryImpor
               agentsListRequest = undefined;
             } else if (context && agentsListRequest !== context.agents) {
               const agents = context.agents;
-              // Hold the latch through the owner's loading and failure notifications.
               agentsListRequest = agents;
               void agents
                 .ensureList()
@@ -142,6 +141,7 @@ function OnboardingMemoryImportContent(props: Props, host: OnboardingMemoryImpor
                 });
             }
           };
+          // Keep list admission latched through the owner's loading and failure notifications.
           const stop = source.subscribe(requestList);
           requestList();
           return stop;
@@ -321,11 +321,13 @@ function OnboardingMemoryImportContent(props: Props, host: OnboardingMemoryImpor
       }
     });
   };
-  const stopDisconnect = listen(host, "onboarding-memory-disconnect", disconnect);
-  onCleanup(() => {
-    disposed = true;
-    abortPlan?.abort();
-    stopDisconnect();
+  onSettled(() => {
+    const stopDisconnect = listen(host, "onboarding-memory-disconnect", disconnect);
+    return () => {
+      disposed = true;
+      abortPlan?.abort();
+      stopDisconnect();
+    };
   });
 
   function Provider(providerProps: { provider: MemoryMigrationProviderPlan }) {

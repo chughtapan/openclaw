@@ -19,6 +19,7 @@ import {
   readLiteralSchemaValues,
   schemaAnnotationsOnly,
 } from "../shared/json-schema-literals.js";
+import { mapArrayIfChanged } from "../shared/map-array-if-changed.js";
 import type {
   AnyAgentTool,
   ProviderNormalizeToolSchemasContext,
@@ -171,16 +172,12 @@ export function normalizeOpenAIToolSchemas(
   if (!shouldApplyOpenAIToolCompat(ctx)) {
     return ctx.tools;
   }
-  return ctx.tools.map((tool) => {
+  return mapArrayIfChanged(ctx.tools, (tool) => {
     if (tool.parameters != null && typeof tool.parameters !== "object") {
       return tool;
     }
-    return {
-      ...tool,
-      parameters: normalizeOpenAIStrictCompatSchema(
-        truncateToolSchemaDepth(tool.parameters ?? {}, tool.name),
-      ),
-    };
+    const parameters = normalizeOpenAIStrictCompatSchema(tool.parameters ?? {}, tool.name);
+    return parameters === tool.parameters ? tool : { ...tool, parameters };
   });
 }
 
@@ -247,13 +244,7 @@ function isNullSchemaVariant(schema: unknown): boolean {
 
 function normalizeDeepSeekSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) {
-    let changed = false;
-    const normalized = schema.map((entry) => {
-      const next = normalizeDeepSeekSchema(entry);
-      changed ||= next !== entry;
-      return next;
-    });
-    return changed ? normalized : schema;
+    return mapArrayIfChanged(schema, normalizeDeepSeekSchema);
   }
   if (!schema || typeof schema !== "object") {
     return schema;

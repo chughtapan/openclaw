@@ -386,7 +386,7 @@ it("preserves bottom-up directory membership and canonical output across input o
 it("reserves aggregate inventory bytes even when every file hits the hash memo", async () => {
   const { root, capture } = await inventoryFixture();
   const memo = new Map<string, string>();
-  const metrics = { contentHashCount: 0, contentHashDurationMs: 0, memoHitCount: 0 };
+  const metrics = { contentHashCount: 0, memoHitCount: 0 };
   for (const file of ["first.bin", "second.bin"]) {
     const target = path.join(root, file);
     await fs.writeFile(target, "");
@@ -400,6 +400,28 @@ it("reserves aggregate inventory bytes even when every file hits the hash memo",
     "eligible byte limit",
   );
   expect(metrics).toMatchObject({ contentHashCount: 0, memoHitCount: 1 });
+});
+
+it("opens only changed file content while retaining fresh edits and deletions", async () => {
+  const { root, files, capture } = await inventoryFixture(3);
+  const memo = new Map<string, string>();
+  const read = () => withWorkspaceHashMemo(memo, () => capture());
+  const first = await read();
+  const changed = path.join(root, files[1]!);
+  const before = await fs.stat(changed);
+  await fs.writeFile(changed, "edited");
+  // Size and mtime alone cannot identify a file's contents.
+  await fs.utimes(changed, before.atime, before.mtime);
+  await fs.unlink(path.join(root, files[2]!));
+  const opened = vi.spyOn(fs, "open");
+  const next = await read();
+  expect(next.manifestRef).not.toBe(first.manifestRef);
+  expect(next.manifest.entries.map((entry) => entry.path)).toEqual(files.slice(0, 2));
+  expect(next.manifest.entries[1]).toMatchObject({
+    sha256: createHash("sha256").update("edited").digest("hex"),
+  });
+  expect(opened.mock.calls.some(([file]) => file === path.join(root, files[0]!))).toBe(false);
+  expect(opened.mock.calls.some(([file]) => file === changed)).toBe(true);
 });
 
 it("bounds active fallback scratch across inventories and skips reads on memo hits", async () => {

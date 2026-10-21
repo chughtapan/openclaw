@@ -52,7 +52,7 @@ Each entry lists the package, distribution route, and description.
 
 ## Core npm package
 
-72 plugins
+73 plugins
 
 - **[a2a](/plugins/reference/a2a)** (`@openclaw/a2a`) - included in OpenClaw. A2A v1.0 Agent-to-Agent protocol channel plugin.
 
@@ -77,6 +77,8 @@ Each entry lists the package, distribution route, and description.
 - **[azure-speech](/plugins/reference/azure-speech)** (`@openclaw/azure-speech`) - included in OpenClaw. Azure AI Speech text-to-speech (MP3, native Ogg/Opus voice notes, PCM telephony).
 
 - **[beam](/plugins/reference/beam)** (`@openclaw/beam`) - included in OpenClaw. Read-only coding-session Beam receiver.
+
+- **[bifrost](/plugins/reference/bifrost)** (`@openclaw/bifrost-provider`) - included in OpenClaw. Adds Bifrost model provider support to OpenClaw.
 
 - **[bonjour](/plugins/reference/bonjour)** (`@openclaw/bonjour`) - included in OpenClaw. Advertise the local OpenClaw gateway over Bonjour/mDNS.
 
@@ -200,7 +202,7 @@ Each entry lists the package, distribution route, and description.
 
 ## Official external packages
 
-98 plugins
+99 plugins
 
 - **[acpx](/plugins/reference/acpx)** (`@openclaw/acpx`) - npm or ClawHub: `@openclaw/acpx`. OpenClaw ACP runtime backend with plugin-owned session and transport management.
 
@@ -285,6 +287,8 @@ Each entry lists the package, distribution route, and description.
 - **[kilocode](/plugins/reference/kilocode)** (`@openclaw/kilocode-provider`) - npm or ClawHub: `@openclaw/kilocode-provider`. Adds Kilocode model provider support to OpenClaw.
 
 - **[kimi](/plugins/reference/kimi)** (`@openclaw/kimi-provider`) - npm or ClawHub: `@openclaw/kimi-provider`. Adds Kimi, Kimi Code, Kimi Coding model provider support to OpenClaw.
+
+- **[levanto](/plugins/reference/levanto)** (`@openclaw/levanto`) - npm or ClawHub: `@openclaw/levanto`. Native Yes/No, Choice, Scale, Sort, and Tags decisions with explicit abstention.
 
 - **[line](/plugins/reference/line)** (`@openclaw/line`) - npm or ClawHub: `@openclaw/line`. OpenClaw LINE channel plugin for LINE Bot API chats.
 

@@ -320,9 +320,10 @@ node scripts/diagnostic-writer-occupancy.mts gateway.log --json \
 
 The report splits observed reservation and queue-wait intervals into UTC minutes,
 ranks operation categories, and lists the longest observed reservations. Native
-transaction phases appear separately: `hostAdmissionWaitMs` measures time awaiting
-the host, while `sqlMs` is the remaining execution time, including JavaScript
-processing. Do not add transaction time to enclosing reservation time.
+transaction phases appear separately. `hostAdmissionWaitMs` measures waits for
+transaction authority, while `databaseAdmissionWaitMs` measures database metadata
+exchanges with the host. `sqlMs` is the remaining execution time, including
+JavaScript processing. Do not add transaction time to enclosing reservation time.
 
 This is a warning census, not complete writer utilization. Fast operations are
 absent, `direct` reservations do not identify their underlying command, and logs
@@ -582,6 +583,15 @@ collect more samples at greater CPU and memory cost. Choose a CLI timeout longer
 than the requested capture. The critical-memory warning points to this RPC;
 pressure never starts a capture automatically.
 
+The response reports `requestedDurationMs`, `effectiveDurationMs` (the clamped
+sampling window), and `actualDurationMs`. `durationLimitReason` is
+`"collected-samples"` when the 30-second cap shortened the request,
+`"maximum-duration"` when the 15-minute cap shortened it, and `null` otherwise.
+The collected-sample cap limits profiler memory growth; sampled allocation bytes
+do not end a capture early. Actual duration includes native start and stop work
+and can exceed the effective window when the event loop is busy. Setup, cleanup,
+and sanitization can add further RPC latency.
+
 `includeCollected: true` enables both collected-object flags. Explicit per-GC
 flags override the shorthand. The optional booleans `includeObjectsCollectedByMajorGC` and
 `includeObjectsCollectedByMinorGC` both default to `false`. Enable both to retain
@@ -602,7 +612,7 @@ allows 30 seconds beyond the requested window for setup and cleanup; event-loop
 stalls can require more time. Disconnection, authority revocation, or Gateway
 shutdown cancels sampling and discards the partial profile after cleanup.
 
-The result includes actual elapsed `durationMs`, `samplingIntervalBytes`,
+The result includes actual elapsed `durationMs` (an alias of `actualDurationMs`), `samplingIntervalBytes`,
 `includeObjectsCollectedByMajorGC`, `includeObjectsCollectedByMinorGC`,
 `heapUsedBefore`, `heapUsedAfter`, `rssBefore`, `rssAfter` (all memory values in
 bytes), `redactedNodeCount`, `unattributedSampleCount`, `unattributedSampleBytes`,
@@ -761,6 +771,10 @@ refresh its heap and external counters; ArrayBuffer coverage remains unavailable
 until the worker responds. Memory pressure warnings include these counters and the external-memory
 limit caveat; Node does not provide a worker limit for external/native allocations.
 
+Linux samples add anonymous-page counters asynchronously. Worker sample ages
+include that delay; coverage and heap counters describe acquisition. These fields
+are not an atomic process snapshot.
+
 Critical memory pressure retires idle workers through their existing cleanup owners,
 including when diagnostic event collection is disabled. Warnings do not retire
 workers. Retirement requests are asynchronous, skip active work, and keep native
@@ -852,7 +866,9 @@ The event label contains only known protocol names, with `other` for unknown
 names. Payload content and session, user, and connection identifiers are excluded.
 The sender batches observations by event name within one event-loop turn,
 preserving the per-socket frame and byte totals without exporting every send
-as a separate diagnostic event.
+as a separate diagnostic event. Counters are reused across turns; diagnostic
+snapshots and cumulative bucket objects are created only at flush. Disabled
+diagnostics or no interested internal listener skips all per-frame accounting.
 `openclaw_gateway_ws_operator_connections` reports the current authenticated
 operator socket count without labels, updating on connect/disconnect and every
 30 seconds to refresh late-starting exporters or recover dropped snapshots.

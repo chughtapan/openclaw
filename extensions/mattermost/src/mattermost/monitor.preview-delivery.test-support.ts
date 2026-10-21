@@ -60,7 +60,7 @@ export function registerMattermostPreviewDeliveryTests(harness: {
   const dispatcher = () =>
     mockState.createReplyDispatcherWithTyping.mock.results.at(-1)?.value?.options;
   const expectParticipation = (root: string) => {
-    const expected = ["default", "chan-1", root, { agentId: "main" }];
+    const expected = ["default", "chan-1", root];
     expect(mockState.recordMattermostThreadParticipation.mock.calls).toContainEqual(expected);
   };
   it("keeps Mattermost progress with tools disabled and no label", async () => {
@@ -218,11 +218,12 @@ export function registerMattermostPreviewDeliveryTests(harness: {
   it("records confirmed-preview participation when cleanup fails", async () => {
     const blockConfig = withStreaming({ mode: "block" });
     mockState.runtimeCore = createRuntimeCore(blockConfig);
+    const discardPending = vi.fn(async () => {
+      throw new Error("preview cleanup failed");
+    });
     mockState.createMattermostDraftStream.mockReturnValue(
       createFinalDraft({
-        discardPending: vi.fn(async () => {
-          throw new Error("preview cleanup failed");
-        }),
+        discardPending,
         resolveFinalText: vi.fn(() => ({
           kind: "already-delivered" as const,
           publishedParts: [{ messageId: "preview-sealed", content: "Only block" }],
@@ -236,7 +237,7 @@ export function registerMattermostPreviewDeliveryTests(harness: {
         await reply?.onAssistantMessageStart?.();
         await expect(
           dispatcher()?.deliver({ text: "Only block" }, { kind: "final" }),
-        ).rejects.toThrow("preview cleanup failed");
+        ).resolves.toMatchObject({ visibleReplySent: true, messageIds: ["preview-sealed"] });
       } finally {
         mockState.abortController?.abort();
       }
@@ -245,6 +246,7 @@ export function registerMattermostPreviewDeliveryTests(harness: {
       { id: "confirmed-preview", message: "stream", rootId: "confirmed-root" },
       blockConfig,
     );
+    expect(discardPending).toHaveBeenCalled();
     expect(mockState.sendMessageMattermost).not.toHaveBeenCalled();
     expectParticipation("confirmed-root");
   });

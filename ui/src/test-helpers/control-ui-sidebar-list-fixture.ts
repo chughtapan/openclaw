@@ -3,10 +3,8 @@ import {
   SESSION_ROW_DETAIL_FIELDS,
   SESSION_SIDEBAR_ROW_FIELDS,
 } from "../../../packages/gateway-protocol/src/session-row-fields.ts";
-import {
-  compareSessionEntryPairs,
-  type SessionEntryPair,
-} from "../../../src/gateway/session-list-order.ts";
+import { compareSessionEntries } from "../../../src/gateway/session-list-order.ts";
+import { readSessionListSelectionFacts } from "../../../src/gateway/session-list-target.ts";
 import {
   SESSIONS_LIST_OWNER_LIMIT,
   SESSIONS_LIST_TRANSCRIPT_LIMIT,
@@ -43,27 +41,28 @@ export type TeamScaleSidebarListInventory = {
 type TeamScaleSidebarRow = GatewaySessionRow & { updatedAt: number | null };
 type TeamScaleSidebarListResult = SessionsListResult & { sessions: TeamScaleSidebarRow[] };
 
-function sessionEntryPair(row: GatewaySessionRow): SessionEntryPair {
-  return [
-    row.key,
-    {
-      sessionId: row.sessionId ?? row.key,
-      updatedAt: row.updatedAt ?? 0,
-      createdAt: row.createdAt,
-      lastActivityAt: row.lastActivityAt,
-      lastInteractionAt: row.lastInteractionAt,
-      pinnedAt: row.pinned ? row.pinnedAt : undefined,
-      spawnedBy: row.spawnedBy,
-      parentSessionKey: row.parentSessionKey,
-      sidebarRoot: row.sidebarRoot,
-    },
-  ];
+function selectionFacts(row: GatewaySessionRow) {
+  return readSessionListSelectionFacts(row.key, {
+    sessionId: row.sessionId ?? row.key,
+    updatedAt: row.updatedAt ?? 0,
+    createdAt: row.createdAt,
+    lastActivityAt: row.lastActivityAt,
+    lastInteractionAt: row.lastInteractionAt,
+    pinnedAt: row.pinned ? row.pinnedAt : undefined,
+    spawnedBy: row.spawnedBy,
+    parentSessionKey: row.parentSessionKey,
+    sidebarRoot: row.sidebarRoot,
+  });
 }
 
 /** Owns the synthetic Gateway's changing membership; production code packs its wire rows. */
 export function createTeamScaleSidebarListOwner(input: TeamScaleSidebarListInventory) {
-  const admit = (row: GatewaySessionRow): TeamScaleSidebarRow =>
-    Object.freeze({ ...row, updatedAt: row.updatedAt ?? null });
+  const selections = new WeakMap<TeamScaleSidebarRow, ReturnType<typeof selectionFacts>>();
+  const admit = (row: GatewaySessionRow): TeamScaleSidebarRow => {
+    const admitted = Object.freeze({ ...row, updatedAt: row.updatedAt ?? null });
+    selections.set(admitted, selectionFacts(admitted));
+    return admitted;
+  };
   const rows = new Map(input.rows.map((row) => [row.key, admit(row)]));
   const previous = new Map<string, { rows: TeamScaleSidebarRow[]; revision: string }>();
   const projections = new WeakMap<TeamScaleSidebarRow, Map<string, TeamScaleSidebarRow>>();
@@ -162,7 +161,7 @@ export function createTeamScaleSidebarListOwner(input: TeamScaleSidebarListInven
           );
         })
         .toSorted((a, b) =>
-          compareSessionEntryPairs(sessionEntryPair(a), sessionEntryPair(b), sortBy),
+          compareSessionEntries(a.key, selections.get(a)!, b.key, selections.get(b)!, sortBy),
         );
       const offset = typeof query.offset === "number" ? query.offset : 0;
       const limit = typeof query.limit === "number" ? query.limit : 200;
@@ -302,6 +301,7 @@ export function prepareTeamScaleSessionOwnership(
         id: owner.id,
         identity: { type: "profile", id: owner.id },
         label: owner.name,
+        avatarUrl: owner.avatarUrl,
       },
     };
     row.hiddenFromInvolvingMe = false;
@@ -317,15 +317,17 @@ export function prepareTeamScaleSessionOwnership(
 export function createTeamScaleSessionEvents(
   sessions: readonly GatewaySessionRow[],
   now: number,
+  options: { durationMs?: number; ancestorSessionKey?: string } = {},
 ): TeamScaleLiveEvent[] {
   const liveEvents: TeamScaleLiveEvent[] = [];
-  for (let index = 0; index < 240; index++) {
+  const durationMs = options.durationMs ?? 30_000;
+  for (let index = 0; index < durationMs / 125; index++) {
     const atMs = (index + 1) * 125;
     const row = {
       ...sessions[index % 24]!,
       updatedAt: now + atMs,
       snapshotAt: now + atMs,
-      lastMessagePreview: `Synthetic worker ${(index % 24) + 1}: completed checkpoint ${Math.floor(index / 24) + 1}.`,
+      lastMessagePreview: `Synthetic worker ${(index % 24) + 1}: completed checkpoint ${Math.floor((index % 240) / 24) + 1}.`,
     };
     liveEvents.push({
       atMs,
@@ -339,6 +341,90 @@ export function createTeamScaleSessionEvents(
         ts: row.updatedAt,
         session: row,
         ancestorSessions: [],
+      },
+    });
+  }
+  if (options.ancestorSessionKey) {
+    const source = sessions.find((row) => row.key === options.ancestorSessionKey);
+    const children = sessions.filter((row) => row.spawnedBy === options.ancestorSessionKey);
+    if (!source || !children.length) {
+      throw new Error("Ancestor-reference churn requires an existing parent and children");
+    }
+    const parent = { ...source, ancestorRevision: "team-scale-parent-v1" };
+    for (let index = 1; index < liveEvents.length; index += 2) {
+      const atMs = liveEvents[index]!.atMs;
+      const ts = now + atMs;
+      const row = {
+        ...children[Math.floor(index / 2) % children.length]!,
+        updatedAt: ts,
+        snapshotAt: ts,
+        lastMessagePreview: `Synthetic child checkpoint ${index}`,
+      };
+      const initial = index === 1;
+      liveEvents[index] = {
+        atMs,
+        kind: initial
+          ? "sessions.changed.child-parent-full"
+          : "sessions.changed.child-parent-reference",
+        event: "sessions.changed",
+        sessionMutation: { upsert: initial ? [row, parent] : [row] },
+        payload: {
+          ...row,
+          sessionKey: row.key,
+          reason: "agent.run.updated",
+          ts,
+          session: row,
+          ancestorSessions: initial
+            ? [{ key: parent.key, agentId: parent.agentId, version: 1, full: parent }]
+            : [],
+          ...(initial
+            ? {}
+            : {
+                ancestorSessionRefs: [
+                  {
+                    key: parent.key,
+                    agentId: parent.agentId,
+                    sessionId: parent.sessionId,
+                    revision: parent.ancestorRevision,
+                    snapshotAt: ts,
+                  },
+                ],
+              }),
+        },
+      };
+    }
+    // References must preserve raw version 1 so a later wire delta still decodes.
+    const atMs = durationMs + 125;
+    const ts = now + atMs;
+    const changed = {
+      label: "Synthetic ancestor baseline verified",
+      displayName: "Synthetic ancestor baseline verified",
+      derivedTitle: "Synthetic ancestor baseline verified",
+      updatedAt: ts,
+      snapshotAt: ts,
+      ancestorRevision: "team-scale-parent-v2",
+    };
+    liveEvents.push({
+      atMs,
+      kind: "sessions.changed.parent-raw-baseline-check",
+      event: "sessions.changed",
+      sessionMutation: { upsert: [{ ...parent, ...changed }] },
+      payload: {
+        sessionKey: parent.key,
+        agentId: parent.agentId,
+        sessionId: parent.sessionId,
+        reason: "patch",
+        ts,
+        updatedAt: ts,
+        ancestorSessions: [],
+        session: {
+          key: parent.key,
+          agentId: parent.agentId,
+          version: 2,
+          base: 1,
+          set: changed,
+          remove: [],
+        },
       },
     });
   }

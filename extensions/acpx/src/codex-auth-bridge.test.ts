@@ -3,11 +3,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
+import acpxPackage from "../package.json" with { type: "json" };
 import { GENERATED_ADAPTER_ORPHAN_SCENARIO } from "./adapter-wrapper-script.test-support.js";
 import { OPENCLAW_CODEX_CONFIG_ARG } from "./codex-adapter.js";
 import { useAuthBridgeFixture } from "./codex-auth-bridge.test-support.js";
 import { splitCommandParts, type AcpxAgentCommand } from "./command-line.js";
 import { OPENCLAW_ACPX_LEASE_ID_ARG, OPENCLAW_GATEWAY_INSTANCE_ID_ARG } from "./process-lease.js";
+
+vi.mock("@openclaw/fs-safe/json", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@openclaw/fs-safe/json")>()),
+}));
 
 const execFileAsync = promisify(execFile);
 const WRAPPER_STDERR_LOG_MAX_CHARS = 256 * 1024;
@@ -18,7 +23,7 @@ async function adapterFixture(source = "console.log('ok');\n") {
   const fixture = createWrapperFixture();
   const bin = path.join(fixture.root, "codex-acp-bin.js");
   await fs.writeFile(bin, source, "utf8");
-  await fixture.prepare({ resolveInstalledCodexAcpBinPath: async () => bin });
+  await fixture.prepare({}, bin);
   const authPath = path.join(fixture.stateDir, "acpx", "codex-home", "auth.json");
   return {
     ...fixture,
@@ -67,9 +72,7 @@ async function captureGeneratedCodexWrapperStderr(
   const { root, stateDir, generated, prepare } = createWrapperFixture();
   const stderrScript = path.join(root, "emit-stderr.mjs");
   await fs.writeFile(stderrScript, source, "utf8");
-  await prepare({
-    resolveInstalledCodexAcpBinPath: async () => path.join(root, "unused-codex-acp.js"),
-  });
+  await prepare();
 
   const leaseId = "lease-unicode";
   const execution = runConfigured(
@@ -111,10 +114,7 @@ describe("prepareAcpxCodexAuthConfig", () => {
     const { root, generated, prepare } = createWrapperFixture();
     const capturedBin = path.join(root, "captured-adapter.cjs");
     await fs.writeFile(capturedBin, "console.log('captured adapter');\n");
-    await prepare({
-      resolveInstalledCodexAcpBinPath: async () => capturedBin,
-      resolveInstalledClaudeAcpBinPath: async () => capturedBin,
-    });
+    await prepare({}, capturedBin);
     const wrapperPath = generated.wrapperPath;
     const packageDir = path.join(root, "node_modules", "@agentclientprotocol", packageName);
     const binDir = path.join(root, "node_modules", ".bin");
@@ -124,7 +124,7 @@ describe("prepareAcpxCodexAuthConfig", () => {
       path.join(packageDir, "package.json"),
       JSON.stringify({
         name: `@agentclientprotocol/${packageName}`,
-        version: "2.1.1",
+        version: acpxPackage.dependencies["@agentclientprotocol/codex-acp"],
         bin: { [packageName]: "index.cjs" },
       }),
     );
@@ -241,7 +241,7 @@ describe("prepareAcpxCodexAuthConfig", () => {
         installedBinPath,
         `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(marker)}, "started");`,
       );
-      await prepare({ resolveInstalledCodexAcpBinPath: async () => installedBinPath });
+      await prepare({}, installedBinPath);
       await expect(
         execFileAsync(
           process.execPath,
@@ -327,9 +327,7 @@ describe("prepareAcpxCodexAuthConfig", () => {
     );
     process.env.OPENCLAW_AGENT_DIR = agentDir;
 
-    const resolved = await prepare({
-      resolveInstalledCodexAcpBinPath: async () => undefined,
-    });
+    const resolved = await prepare();
 
     expectWrapperCommand(resolved.agents.codex, generated.wrapperPath);
     const isolatedConfig = await fs.readFile(generated.configPath, "utf8");
@@ -387,9 +385,7 @@ describe("prepareAcpxCodexAuthConfig", () => {
         ].join("\n"),
       );
 
-      await prepare({
-        resolveInstalledCodexAcpBinPath: async () => undefined,
-      });
+      await prepare();
 
       const isolatedConfig = await fs.readFile(generated.configPath, "utf8");
       for (const project of [root, explicitProject, inlineProject, mapProject]) {
@@ -468,7 +464,6 @@ describe("prepareAcpxCodexAuthConfig", () => {
     await fs.writeFile(quietScript, "process.exit(0);\n", "utf8");
     await prepare({
       pluginConfig: config(`${process.execPath} ${quietScript}`),
-      resolveInstalledCodexAcpBinPath: async () => path.join(root, "codex-acp.js"),
     });
 
     await runConfigured(generated.wrapperPath, noisyScript, "quiet-lease");
@@ -513,12 +508,11 @@ describe("prepareAcpxCodexAuthConfig", () => {
   });
 
   it("does not normalize custom Claude commands that only mention the package name", async () => {
-    const { root, prepare, config } = createWrapperFixture();
+    const { prepare, config } = createWrapperFixture();
     const command =
       "node ./custom-claude-wrapper.mjs @agentclientprotocol/claude-agent-acp@0.31.4 --flag";
     const resolved = await prepare({
       pluginConfig: config(command, "claude"),
-      resolveInstalledClaudeAcpBinPath: async () => path.join(root, "claude-agent-acp.js"),
     });
 
     expect(resolved.agents.claude).toEqual(splitCommandParts(command));

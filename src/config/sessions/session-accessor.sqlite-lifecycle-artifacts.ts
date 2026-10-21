@@ -6,7 +6,7 @@ import {
   iterateSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
-import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import { runSqliteReadSnapshotSync } from "../../infra/sqlite-transaction.js";
 import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { assertOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
@@ -251,7 +251,7 @@ export function planSessionLifecycleArtifactCleanup(
   const pages = planSessionLifecycleArtifactCleanupPages(database, params);
   for (;;) {
     const page = readWithCanonicalSessionReaderContinuation(database, params.continuation, () =>
-      runSqliteDeferredTransactionSync(database.db, () => {
+      runSqliteReadSnapshotSync(database.db, () => {
         assertCanonicalSqliteSessionKeysCurrent(database);
         return pages.next();
       }),
@@ -291,10 +291,7 @@ function* planSessionLifecycleArtifactCleanupPages(
     const db = getSessionKysely(database.db);
     const rows = executeSqliteQuerySync(
       database.db,
-      db
-        .selectFrom("session_nodes")
-        .select(["session_key", "current_session_id", "updated_at"])
-        .orderBy("session_key", "asc"),
+      db.selectFrom("session_nodes").select(["session_key", "current_session_id", "updated_at"]),
     ).rows;
 
     if (diagnostics) {

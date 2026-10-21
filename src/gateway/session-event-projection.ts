@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   GATEWAY_CLIENT_CAPS,
@@ -7,6 +8,7 @@ import {
 } from "../../packages/gateway-protocol/src/client-info.js";
 import type { SessionRow } from "../../packages/gateway-protocol/src/schema/sessions-row.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
+import { getOrCreateWeakOwnerMap } from "../shared/weak-owner-map.js";
 import { readGatewayAccessRevision } from "./gateway-access-revision.js";
 import type { PrepareSessionEventProjection } from "./server-broadcast-types.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
@@ -72,7 +74,6 @@ export function prepareSessionEventProjection(
           ...buildGatewaySessionSnapshot({
             sessionRow: rows.present(record),
             agentId: scope[0],
-            includeSession: true,
           }),
           ...source,
         };
@@ -104,7 +105,9 @@ export function prepareSessionEventProjection(
     const audiences = new Map<
       string,
       {
-        row: NonNullable<ReturnType<ReturnType<typeof presentRecipient>["present"]>>;
+        row: NonNullable<
+          ReturnType<ReturnType<typeof presentRecipient>["presentation"]["present"]>
+        >;
         ancestors: ReturnType<typeof prepareSessionAncestor>[] | undefined;
         hiddenAncestors: string[];
         payloads: Map<string | undefined, ProjectedPayload>;
@@ -112,6 +115,7 @@ export function prepareSessionEventProjection(
     >();
     const diff = createSessionRowDeltaDiffer();
     const deltaPayloads = new WeakMap<object, Map<string, Record<string, unknown>>>();
+    const fieldRefPayloads = new WeakMap<object, Record<string, unknown>>();
     const bodylessPayloads = new WeakMap<object, Record<string, unknown>>();
     const baselineIds = new WeakMap<object, number>();
     let nextBaselineId = 0;
@@ -145,10 +149,11 @@ export function prepareSessionEventProjection(
         accessRevision = currentAccessRevision;
       }
       // Resolve each recipient's live authority before reusing this synchronous publication.
-      const presentation = presentRecipient(client, runProjector);
-      const audienceKey = presentation.audienceKey;
+      const recipient = presentRecipient(client, runProjector);
+      const audienceKey = recipient.audienceKey;
       let audience = audiences.get(audienceKey);
       if (!audience) {
+        const { presentation } = recipient;
         const row = presentation.present(record, enrichment);
         if (!row) {
           return undefined;
@@ -211,16 +216,39 @@ export function prepareSessionEventProjection(
         : undefined;
       let wirePayload: Record<string, unknown> = projected;
       if (rowDelivery) {
-        const cacheKey = JSON.stringify([rowDelivery.key, rowDelivery.bases.map(baselineId)]);
-        let cached = deltaPayloads.get(projected);
-        if (!cached) {
-          cached = new Map();
-          deltaPayloads.set(projected, cached);
+        if (
+          hasGatewayClientCap(client.connect.caps, GATEWAY_CLIENT_CAPS.SESSION_EVENT_FIELD_REFS)
+        ) {
+          let compact = fieldRefPayloads.get(projected);
+          if (!compact) {
+            compact = { ...projected };
+            const sessionFieldRefs: number[] = [];
+            // Reference the reconstructed JSON row, independent of patch insertion order.
+            const fields = Object.entries(row)
+              .filter(([, value]) => value !== undefined)
+              .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+            for (const [index, [field, value]] of fields.entries()) {
+              if (
+                field !== "key" &&
+                field !== "agentId" &&
+                Object.hasOwn(projected, field) &&
+                isDeepStrictEqual(projected[field], value)
+              ) {
+                sessionFieldRefs.push(index);
+                delete compact[field];
+              }
+            }
+            compact.sessionFieldRefs = sessionFieldRefs;
+            fieldRefPayloads.set(projected, compact);
+          }
+          wirePayload = compact;
         }
+        const cacheKey = JSON.stringify([rowDelivery.key, rowDelivery.bases.map(baselineId)]);
+        const cached = getOrCreateWeakOwnerMap(deltaPayloads, wirePayload);
         let deltaPayload = cached.get(cacheKey);
         if (!deltaPayload) {
           deltaPayload = {
-            ...projected,
+            ...wirePayload,
             session: rowDelivery.wire[0],
             ...(Array.isArray(projected.ancestorSessions)
               ? { ancestorSessions: rowDelivery.wire.slice(1) }
