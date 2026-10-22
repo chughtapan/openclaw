@@ -20,6 +20,8 @@ export type AcpElicitationHandlerParams = {
   delivery: {
     deliver: (kind: "block", payload: ReplyPayload) => Promise<boolean>;
   };
+  /** The turn's sender is a bot, so its questions go to the agent's owner. */
+  senderIsBot?: boolean;
   isActive: () => boolean;
 };
 
@@ -55,6 +57,7 @@ export function createAcpElicitationHandler(
     onBlockReply: async (payload: ReplyPayload) => {
       await params.delivery.deliver("block", payload);
     },
+    senderIsBot: params.senderIsBot,
   };
   return async (request, context) => {
     if (
