@@ -87,11 +87,16 @@ it("shares immutable requested rows until a list revision changes", async () => 
   const state = listState(...["alpha", "beta", "gamma"].map((name) => ({ name })));
   const jobs = state.store!.jobs;
   const clone = vi.spyOn(globalThis, "structuredClone");
+  const descriptor = vi.spyOn(Object, "getOwnPropertyDescriptor");
   const revision = vi.spyOn(snapshotRevisions, "resolveCronListSnapshotRevision");
   state.schedulerStarted = true;
 
   const options = { limit: 1, offset: 1, sortBy: "name" as const };
   const page = await listPage(state, options);
+  const rowInspections = descriptor.mock.calls.filter(
+    ([value]) => value === page.jobs[0] || value === page.jobs[0]?.state,
+  ).length;
+  expect(rowInspections).toBe(0);
   const firstStatus = await status(state);
   expect(Object.isFrozen(firstStatus)).toBe(true);
   expect(() => {
@@ -127,6 +132,57 @@ it("shares immutable requested rows until a list revision changes", async () => 
   expect(changedStatus).not.toBe(firstStatus);
   expect(await status(state)).toBe(changedStatus);
   expect(clone).toHaveBeenCalledTimes(2);
+});
+
+it("reuses interleaved list variants while refreshing visibility and mutated rows", async () => {
+  const state = listState(
+    { name: "alpha", agentId: "ops" },
+    { name: "beta", agentId: "main" },
+    { name: "gamma", agentId: "main", enabled: false },
+  );
+  state.schedulerStarted = true;
+  const revision = vi.spyOn(snapshotRevisions, "resolveCronListSnapshotRevision");
+  const options = { includeDisabled: true, sortBy: "name", limit: 1 } as const;
+  const all = await listPage(state, options);
+  const agent = await listPage(state, { ...options, agentId: "main" });
+  expect(all).toMatchObject({ jobs: [{ name: "alpha" }], total: 3 });
+  expect(agent).toMatchObject({ jobs: [{ name: "beta" }], total: 2 });
+
+  const visibleIds = new Set(["job-1", "job-2"]);
+  const visible = (job: CronJob) => visibleIds.has(job.id);
+  expect(await listPage(state, options, visible)).toMatchObject({
+    jobs: [{ name: "alpha" }],
+    total: 2,
+  });
+  visibleIds.delete("job-1");
+  expect(await listPage(state, options, visible)).toMatchObject({
+    jobs: [{ name: "beta" }],
+    total: 1,
+  });
+  expect(revision).toHaveBeenCalledTimes(4);
+  expect(await listPage(state, options)).toMatchObject({
+    jobs: [{ name: "alpha" }],
+    total: 3,
+    snapshotRevision: all.snapshotRevision,
+  });
+  expect(await listPage(state, { ...options, agentId: "main" })).toMatchObject({
+    jobs: [{ name: "beta" }],
+    total: 2,
+    snapshotRevision: agent.snapshotRevision,
+  });
+  expect(revision).toHaveBeenCalledTimes(4);
+
+  await locked(state, async () => {
+    applyCronRuntimeRowsToState(state, [{ ...state.store!.jobs[1]!, name: "delta" }]);
+  });
+  const changedAgent = await listPage(state, { ...options, agentId: "main" });
+  const changedAll = await listPage(state, options);
+  expect(changedAgent).toMatchObject({ jobs: [{ name: "delta" }], total: 2 });
+  expect(changedAgent.snapshotRevision).not.toBe(agent.snapshotRevision);
+  expect(changedAll.snapshotRevision).not.toBe(all.snapshotRevision);
+  expect(agent.jobs[0]?.name).toBe("beta");
+  expect(await listPage(state, { ...options, agentId: "main" })).toEqual(changedAgent);
+  expect(revision).toHaveBeenCalledTimes(6);
 });
 
 it("applies schedule, status, trigger, and cross-field phrase filters before paging", async () => {

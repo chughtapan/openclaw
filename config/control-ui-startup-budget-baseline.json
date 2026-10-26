@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 271047,
-  "reason": "Per-instance observer/subscription sharing cuts provider script CPU 60.13% median and 61.79% p95, provider task time 15.06% and 13.94%, and retained Tooltip script CPU 92.50% and 92.51%. Same-host integrated 763ae526 to 8a6d6bcf stock builds measure startup 270647 to 271047 B gzip (+400 B), Chat +833 B and New Session +688 B; JS/CSS requests and CSS bytes are unchanged. Record the measured integrated startup value.",
-  "updatedAt": "2026-10-25"
+  "startupJsGzipBytes": 271650,
+  "reason": "Same-host route grouping measures 271528 to 271650 B gzip (+122 B), with five startup JS requests and one CSS request unchanged. In 20 base/A-A/head triplets, 100 ms Cron readiness improves 912.5 to 816.2 ms (paired A/A -10.745%); total CPU is flat. Retain the measured head value under the approved small-byte measured-win policy.",
+  "updatedAt": "2026-10-26"
 }
